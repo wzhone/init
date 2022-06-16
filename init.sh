@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "ssh服务 端口将使用 50000 端口"
+echo "ssh服务端口将使用50000 端口"
 read -p "输入要设定的主机名：" hname
 read -p "输入账户wzh的密码：" password
 
@@ -14,12 +14,11 @@ echo -e "Welcome to ${hname} !\n" > /etc/motd
 hostnamectl set-hostname ${hname}
 dnf install -y epel-release tmux elrepo-release tar chrony git rsync iptables* telnet tree net-tools
 dnf install -y p7zip python39 neovim wget zsh util-linux-user lynis netcat yum-utils
-dnf install -y python39-pip python39-devel unzip lrzsz s3fs-fuse firewalld
+dnf install -y python39-pip python39-devel unzip lrzsz s3fs-fuse firewalld rpcbind nfs-utils
 dnf update -y
 pip3 install glances bottle
 systemctl enable firewalld
 systemctl enable sshd
-
 
 # ZSH
 sh -c "$(wget https://raw.github.com/ohmyzsh/ohmyzsh/master/tools/install.sh -O -)"
@@ -32,7 +31,6 @@ echo "alias up='sudo -i'" >> /etc/zshrc
 echo "alias mv='mv -i'" >> /etc/zshrc  
 echo "alias rm='rm -i'" >> /etc/zshrc  
 echo "alias vim='nvim'" >> /etc/zshrc  
-source /etc/zshrc  
 chsh -s /bin/zsh root
 
 # FZF
@@ -49,7 +47,7 @@ dnf --disablerepo=\* --enablerepo=elrepo-kernel install -y kernel-ml.x86_64
 rpm -qa | grep kernel
 
 
-# Prepare
+# Other
 sed -i 's/enforcing/disabled/' /etc/selinux/config
 setenforce 0
 
@@ -59,51 +57,23 @@ sleep 2s
 echo "时间同步状态："
 chronyc sources 
 
-# Install Kubernets
-# cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
-# br_netfilter
-# EOF
-# 
-# cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-# net.bridge.bridge-nf-call-ip6tables = 1
-# net.bridge.bridge-nf-call-iptables = 1
-# EOF
-# sudo sysctl --system
-# 
-# cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
-# [kubernetes]
-# name=Kubernetes
-# baseurl=https://packages.cloud.google.com/yum/repos/kubernetes-el7-\$basearch
-# enabled=1
-# gpgcheck=1
-# repo_gpgcheck=1
-# gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
-# exclude=kubelet kubeadm kubectl
-# EOF
-# 
-# sudo systemctl enable --now kubelet
+sudo mkdir /etc/docker
+cat <<EOF | sudo tee /etc/docker/daemon.json
+{
+  "exec-opts": ["native.cgroupdriver=systemd"],
+  "log-driver": "json-file",
+  "log-opts": {
+    "max-size": "100m"
+  },
+  "storage-driver": "overlay2"
+}
+EOF
+rm /etc/containerd/config.toml
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-echo '{ "exec-opts": ["native.cgroupdriver=systemd"] }' > /etc/dockere/daemon.json
-
+systemctl enable docker
+systemctl daemon-reload
+systemctl restart docker
+systemctl restart containerd
 
 
 # BBR
@@ -120,5 +90,6 @@ echo "重启后请卸载已经安装的 kernel-4.18.0"
 #dnf remove kernel-4.18.0 kernel-core-4.18.0 kernel-modules-4.18.0 kernel-devel-4.18.0 kernel-tools-4.18.0 kernel-tools-libs-4.18.0 kernel-headers-4.18.0
 
 echo "脚本执行完成，回车后重启(Enter)"
+read -t 0.1
 read -n1 
 reboot
