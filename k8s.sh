@@ -74,7 +74,6 @@ firewall-cmd --reload
 # 重启相应服务
 sysctl -p
 sysctl --system
-systemctl enable --now systemd-modules-load
 systemctl enable --now containerd 
 systemctl enable --now kubelet
 systemctl daemon-reload
