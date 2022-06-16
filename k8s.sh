@@ -27,7 +27,7 @@ crictl config \
 
 
 
-# 
+# 启用系统相关的 
 cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
 net.ipv4.ip_forward=1
 net.bridge.bridge-nf-call-iptables=1
@@ -84,3 +84,4 @@ echo "---------通用命令结束---------"
 # 初始化控制面节点
 # kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=all 
 # echo "export KUBECONFIG=/etc/kubernetes/admin.conf" >> /root/.zshrc
+# kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
