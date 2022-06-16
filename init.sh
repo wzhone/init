@@ -1,5 +1,4 @@
 #!/bin/bash
-echo "ssh服务端口将使用50000 端口"
 
 # SSH
 sed -i "s/#Port 22/Port 50000/g" /etc/ssh/sshd_config
@@ -40,7 +39,6 @@ echo "wzh ALL=(ALL)  NOPASSWD:ALL" >> /etc/sudoers
 dnf --disablerepo=\* --enablerepo=elrepo-kernel install -y kernel-ml.x86_64
 rpm -qa | grep kernel
 
-
 # Other
 sed -i 's/enforcing/disabled/' /etc/selinux/config
 setenforce 0
@@ -48,8 +46,6 @@ setenforce 0
 sed -i 's/2.pool.ntp.org/time.windows.com/' /etc/chrony.conf
 systemctl enable --now chronyd 
 sleep 2s
-echo "时间同步状态："
-chronyc sources 
 
 
 # BBR
@@ -57,15 +53,16 @@ echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf
 echo "net.ipv4.ip_forward = 1" >> /etc/sysctl.conf
 echo "net.ipv4.tcp_congestion_control=bbr" >> /etc/sysctl.conf
 sysctl -p
+
+
+# -----END-----
+echo "------------------------------------"
+echo "时间同步状态："
+chronyc sources 
 echo "BBR 状态:"
 lsmod | grep bbr
 
-# -----END-----
-
-echo "重启后请卸载已经安装的 kernel-4.18.0"
-#dnf remove kernel-4.18.0 kernel-core-4.18.0 kernel-modules-4.18.0 kernel-devel-4.18.0 kernel-tools-4.18.0 kernel-tools-libs-4.18.0 kernel-headers-4.18.0
-
-echo "脚本执行完成，回车后重启(Enter)"
-read -t 0.1
-read -n1 
-reboot
+echo "重启后请执行 after.sh"
+echo "ssh服务端口将使用50000 端口"
+echo "请手动重启"
+echo "------------------------------------"

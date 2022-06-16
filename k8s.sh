@@ -13,7 +13,7 @@ gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cl
 exclude=kubelet kubeadm kubectl
 EOF
 dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
-dnf install yum-utils device-mapper-persistent-data lvm2 containerd.io
+dnf install -y yum-utils device-mapper-persistent-data lvm2 containerd.io
 
 
 # 准备配置文件
@@ -82,4 +82,5 @@ systemctl daemon-reload
 echo "---------通用命令结束---------"
 
 # 初始化控制面节点
-kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=all 
+# kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=all 
+# echo "export KUBECONFIG=/etc/kubernetes/admin.conf" >> /root/.zshrc
