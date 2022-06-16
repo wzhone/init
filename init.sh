@@ -57,24 +57,6 @@ sleep 2s
 echo "时间同步状态："
 chronyc sources 
 
-sudo mkdir /etc/docker
-cat <<EOF | sudo tee /etc/docker/daemon.json
-{
-  "exec-opts": ["native.cgroupdriver=systemd"],
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "100m"
-  },
-  "storage-driver": "overlay2"
-}
-EOF
-rm /etc/containerd/config.toml
-
-systemctl enable docker
-systemctl daemon-reload
-systemctl restart docker
-systemctl restart containerd
-
 
 # BBR
 echo "net.core.default_qdisc=fq" >> /etc/sysctl.conf

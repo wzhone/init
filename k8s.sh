@@ -1,10 +1,7 @@
 #!/bin/bash
 
-cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
-net.bridge.bridge-nf-call-ip6tables = 1
-net.bridge.bridge-nf-call-iptables = 1
-EOF
-
+# 安装K8S
+dnf config-manager --add-repo=https://download.docker.com/linux/centos/docker-ce.repo
 cat <<EOF | sudo tee /etc/yum.repos.d/kubernetes.repo
 [kubernetes]
 name=Kubernetes
@@ -15,13 +12,52 @@ repo_gpgcheck=1
 gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg https://packages.cloud.google.com/yum/doc/rpm-package-key.gpg
 exclude=kubelet kubeadm kubectl
 EOF
+dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
+dnf install yum-utils device-mapper-persistent-data lvm2 containerd.io
 
-cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
-br_netfilter
+
+# 准备配置文件
+containerd config default > /etc/containerd/config.toml
+sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
+echo "KUBELET_EXTRA_ARGS=--container-runtime=remote --container-runtime-endpoint=/run/containerd/containerd.sock --cgroup-driver=systemd" > /etc/sysconfig/kubelet
+
+crictl config \
+	--set runtime-endpoint=unix:///run/containerd/containerd.sock \
+	--set image-endpoint=unix:///run/containerd/containerd.sock
+
+
+
+# 
+cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
+net.ipv4.ip_forward=1
+net.bridge.bridge-nf-call-iptables=1
+net.bridge.bridge-nf-call-ip6tables=1
+net.bridge.bridge-nf-call-arptables=1
+net.ipv4.tcp_tw_recycle=0
+net.ipv4.tcp_tw_reuse=0
+net.core.somaxconn=32768
+net.netfilter.nf_conntrack_max=1000000
+vm.swappiness=0
+vm.max_map_count=655360
+fs.file-max=6553600
+net.ipv4.tcp_keepalive_time=600
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=10
 EOF
 
-# Add firewalld rules
-ffirewall-cmd --permanent --new-service=k8s
+cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
+ip_vs
+ip_vs_rr
+ip_vs_wrr
+ip_vs_sh
+nf_conntrack
+nf_conntrack_ipv4
+br_netfilter
+overlay
+EOF
+
+# 添加防火墙规则 
+firewall-cmd --permanent --new-service=k8s
 firewall-cmd --service=k8s --permanent --add-port=6443/tcp # Kubernetes API server
 firewall-cmd --service=k8s --permanent --add-port=2379-2380/tcp # etcd server client API
 firewall-cmd --service=k8s --permanent --add-port=10250/tcp # Kubelet API
@@ -35,19 +71,15 @@ firewall-cmd --service=k8s --reload
 firewall-cmd --add-service=k8s --permanent
 firewall-cmd --reload
 
-systemctl restart firewalld
-
-dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
-
-systemctl enable docker
-systemctl daemon-reload
-systemctl restart docker
-systemctl restart containerd
+# 重启相应服务
+sysctl -p
 sysctl --system
+systemctl enable --now systemd-modules-load
+systemctl enable --now containerd 
 systemctl enable --now kubelet
+systemctl daemon-reload
 
-systemctl enable kubelet
+echo "---------通用命令结束---------"
 
+# 初始化控制面节点
 kubeadm init --pod-network-cidr=10.244.0.0/16 --ignore-preflight-errors=all 
-
-
