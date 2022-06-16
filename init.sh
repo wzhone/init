@@ -1,8 +1,5 @@
 #!/bin/bash
-
 echo "ssh服务端口将使用50000 端口"
-read -p "输入要设定的主机名：" hname
-read -p "输入账户wzh的密码：" password
 
 # SSH
 sed -i "s/#Port 22/Port 50000/g" /etc/ssh/sshd_config
@@ -10,8 +7,6 @@ sed -i 's/PermitRootLogin yes/PermitRootLogin no/g' /etc/ssh/sshd_config
 firewall-cmd --add-port=50000/tcp --permanent
 
 # Common
-echo -e "Welcome to ${hname} !\n" > /etc/motd
-hostnamectl set-hostname ${hname}
 dnf install -y epel-release tmux elrepo-release tar chrony git rsync iptables* telnet tree net-tools
 dnf install -y p7zip python39 neovim wget zsh util-linux-user lynis netcat yum-utils
 dnf install -y python39-pip python39-devel unzip lrzsz s3fs-fuse firewalld rpcbind nfs-utils
@@ -40,7 +35,6 @@ git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
 # Add super user
 useradd wzh
 echo "wzh ALL=(ALL)  NOPASSWD:ALL" >> /etc/sudoers
-echo $password | passwd wzh -f --stdin > /dev/null
 
 # Upgrade Kernel
 dnf --disablerepo=\* --enablerepo=elrepo-kernel install -y kernel-ml.x86_64
