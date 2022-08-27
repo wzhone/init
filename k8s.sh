@@ -15,7 +15,6 @@ EOF
 dnf install -y kubelet kubeadm kubectl --disableexcludes=kubernetes
 dnf install -y yum-utils device-mapper-persistent-data lvm2 containerd.io
 
-
 # 准备配置文件
 containerd config default > /etc/containerd/config.toml
 sed -i "s/SystemdCgroup = false/SystemdCgroup = true/" /etc/containerd/config.toml
@@ -24,8 +23,6 @@ echo "KUBELET_EXTRA_ARGS=--container-runtime=remote --container-runtime-endpoint
 crictl config \
 	--set runtime-endpoint=unix:///run/containerd/containerd.sock \
 	--set image-endpoint=unix:///run/containerd/containerd.sock
-
-
 
 # 启用系统相关的 
 cat <<EOF | sudo tee /etc/sysctl.d/k8s.conf
