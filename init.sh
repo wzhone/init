@@ -9,13 +9,11 @@ sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 30/g' /etc/ssh/sshd_con
 sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/g' /etc/ssh/sshd_config
 firewall-cmd --add-port=50000/tcp --permanent || firewall-offline-cmd --add-port=50000/tcp
 
-
 # Common
 dnf install -y epel-release tmux elrepo-release tar chrony git rsync telnet tree net-tools 
 dnf install -y p7zip neovim wget zsh util-linux-user lynis netcat yum-utils fail2ban expect
 dnf install -y python3-pip python3-devel unzip lrzsz firewalld rpcbind nfs-utils
 dnf update -y
-
 pip3 install glances bottle
 
 # Add super user
@@ -23,7 +21,6 @@ useradd user
 echo "user ALL=(ALL)  NOPASSWD:ALL" >> /etc/sudoers
 pwd=`mkpasswd-expect`
 echo $pwd | passwd user --stdin
-
 
 # ZSH
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
@@ -44,7 +41,7 @@ sed -i 's/enforcing/disabled/' /etc/selinux/config
 setenforce 0
 
 sed -i 's/2.pool.ntp.org/time.windows.com/' /etc/chrony.conf
-systemctl enable --now chronyd 
+systemctl enable --now chronyd
 sleep 2s
 
 # BBR
@@ -56,11 +53,10 @@ sysctl -p
 systemctl enable firewalld
 systemctl enable sshd
 
-# -----END-----
-echo "------------------------------------" > /root/init.log
-echo "时间同步状态：" >> /root/init.log
-chronyc sources >> /root/init.log
-echo -n "BBR 状态: " >> /root/init.log
-lsmod | grep bbr >> /root/init.log
-echo "用户密码 $pwd" >> /root/init.log
-echo "------------------------------------" >> /root/init.log
+echo "------------------------------------"
+echo "时间同步状态："
+chronyc sources
+echo -n "BBR 状态: "
+lsmod | grep bbr
+echo "用户密码 $pwd"
+echo "------------------------------------"
