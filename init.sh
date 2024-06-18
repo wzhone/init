@@ -12,7 +12,7 @@ systemctl enable --now sshd
 
 # 安装基础应用包
 dnf install -y epel-release
-dnf install -y tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat yum-utils fail2ban util-linux-use
+dnf install -y tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat yum-utils fail2ban util-linux-user
 dnf update -y
 
 # 安装不是很常用的包
