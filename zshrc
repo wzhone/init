@@ -112,10 +112,7 @@ source $ZSH/oh-my-zsh.sh
 
 alias glances='/usr/local/bin/glances -t 0.5'
 alias dunow='du -hl --max-depth=1'
-alias html='cd /var/www/html'
 alias rs='sudo systemctl restart'
 alias st='systemctl status'
-alias up='sudo -i'
 alias mv='mv -i'
 alias rm='rm -i'
-alias vim='nvim'
