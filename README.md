@@ -1,4 +1,4 @@
-# INIT
+# 初始化脚本
 
 ## 使用方式
 
@@ -14,3 +14,7 @@ inst.ks=https://raw.githubusercontent.com/wzhone/init/master/system.cfg net.ifna
 ```bash
 curl https://raw.githubusercontent.com/wzhone/init/master/init.sh | bash 
 ```
+
+## 注意事项
+
+* 避免使用root用户执行初始化脚本
