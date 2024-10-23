@@ -213,10 +213,13 @@ if prompt_user "是否需要同步系统时间"; then
 
         # 使用多个 NTP 服务器
         cat >$CHRONY_CONF <<EOF
-server ntp.aliyun.com iburst
-server cn.pool.ntp.org iburst
-server time.windows.com iburst
-server ntp.ntsc.ac.cn iburst
+server africa.pool.ntp.org iburst
+server antarctica.pool.ntp.org iburst
+server asia.pool.ntp.org iburst
+server europe.pool.ntp.org iburst
+server north-america.pool.ntp.org iburst
+server oceania.pool.ntp.org iburst
+server south-america.pool.ntp.org iburst
 EOF
     fi
 
