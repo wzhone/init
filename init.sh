@@ -162,6 +162,10 @@ if prompt_user "是否需要安装 ZSH、Powerlevel10k 主题和 FZF"; then
     # 下载 Powerlevel10k 和 ZSH 配置文件
     curl -fsSL ${GITHUB_URL_PREFIX}https://raw.githubusercontent.com/wzhone/init/master/zshrc -o ~/.zshrc
 
+    # 安装 zsh-syntax-highlighting 和 zsh-autosuggestions 插件
+    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/zsh-users/zsh-syntax-highlighting ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
+
     # 安装 FZF（命令行模糊查找器）
     git clone --depth 1 ${GITHUB_URL_PREFIX}https://github.com/junegunn/fzf.git ~/.fzf
     ~/.fzf/install --all
