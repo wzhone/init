@@ -1,56 +1,48 @@
 #!/bin/bash
 
-# 函数：提示用户确认
 prompt_user() {
     while true; do
-        read -p "$1 (Y/n): " yn
+        read -rp "$1 (Y/n): " yn
+        yn=${yn:-Y}  # 默认值为 'Y'
         case $yn in
-        [Yy]* | '') return 0 ;;
-        [Nn]*) return 1 ;;
-        *) echo "请输入 Y 或 n." ;;
+            [Yy]*) return 0 ;;
+            [Nn]*) return 1 ;;
+            *) echo "请输入 Y 或 n." ;;
         esac
     done
 }
 
-# 检测操作系统并设置相应的包管理器和命令
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS=$ID
-    VERSION_ID=$VERSION_ID
+    case $OS in
+        ubuntu|debian)
+            INSTALL_CMD="apt install -y"
+            UPDATE_CMD="apt update -y && apt upgrade -y"
+            ENABLE_SERVICE_CMD="systemctl enable --now"
+            ;;
+        arch)
+            INSTALL_CMD="pacman -S --noconfirm"
+            UPDATE_CMD="pacman -Syu --noconfirm"
+            ENABLE_SERVICE_CMD="systemctl enable --now"
+            ;;
+        rocky|centos|fedora)
+            INSTALL_CMD="dnf install -y"
+            UPDATE_CMD="dnf update -y"
+            ENABLE_SERVICE_CMD="systemctl enable --now"
+            ;;
+        *)
+            echo "不支持的操作系统：$OS"
+            exit 1
+            ;;
+    esac
 else
     echo "无法检测操作系统类型。"
     exit 1
 fi
 
-# 初始化变量
-INSTALL_CMD=""
-UPDATE_CMD=""
-ENABLE_SERVICE_CMD=""
 GITHUB_URL_PREFIX=""
 
-case $OS in
-ubuntu)
-    INSTALL_CMD="apt install -y"
-    UPDATE_CMD="apt update -y && apt upgrade -y"
-    ENABLE_SERVICE_CMD="systemctl enable --now"
-    ;;
-arch)
-    INSTALL_CMD="pacman -S --noconfirm"
-    UPDATE_CMD="pacman -Syu --noconfirm"
-    ENABLE_SERVICE_CMD="systemctl enable --now"
-    ;;
-rocky)
-    INSTALL_CMD="dnf install -y"
-    UPDATE_CMD="dnf update -y"
-    ENABLE_SERVICE_CMD="systemctl enable --now"
-    ;;
-*)
-    echo "不支持的操作系统：$OS"
-    exit 1
-    ;;
-esac
-
-# 询问是否使用 GitHub 代理
 USE_GITHUB_PROXY=0
 if prompt_user "需要使用 GitHub 代理加速？"; then
     USE_GITHUB_PROXY=1
@@ -61,7 +53,7 @@ fi
 
 # 1. 修改主机名
 if prompt_user "是否需要修改当前设备名称"; then
-    read -p "请输入新的主机名: " NEW_HOSTNAME
+    read -rp "请输入新的主机名: " NEW_HOSTNAME
     if [ -n "$NEW_HOSTNAME" ]; then
         hostnamectl set-hostname "$NEW_HOSTNAME"
         echo "主机名已修改为 $NEW_HOSTNAME"
@@ -74,47 +66,47 @@ fi
 # 2. 配置 SSH
 #########################
 if prompt_user "是否需要配置 SSH 设置"; then
-    echo "正在配置 SSH..."
+    echo "警告：修改 SSH 配置可能会导致当前会话中断，请谨慎操作。"
+    if ! prompt_user "是否继续"; then
+        echo "跳过 SSH 配置。"
+    else
+        echo "正在配置 SSH..."
 
-    # 备份 SSH 配置文件
-    cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+        # 备份 SSH 配置文件
+        cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 
-    # 修改默认 SSH 端口为 2222
-    sed -i "s/#Port 22/Port 2222/g" /etc/ssh/sshd_config
+        # 修改默认 SSH 端口为 2222
+        sed -i 's/^#\?Port .*/Port 2222/' /etc/ssh/sshd_config
 
-    # 禁止空密码登录
-    sed -i 's/#PermitEmptyPasswords no/PermitEmptyPasswords no/g' /etc/ssh/sshd_config
+        # 禁止空密码登录
+        sed -i 's/^#\?PermitEmptyPasswords .*/PermitEmptyPasswords no/' /etc/ssh/sshd_config
 
-    # 禁止 root 登录
-    sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/g' /etc/ssh/sshd_config
+        # 禁止 root 登录
+        sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
 
-    # 设置最大认证尝试次数为 1
-    sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 1/g' /etc/ssh/sshd_config
+        # 设置最大认证尝试次数为 1
+        sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 1/' /etc/ssh/sshd_config
 
-    # 设置客户端保持连接
-    sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 30/g' /etc/ssh/sshd_config
-    sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/g' /etc/ssh/sshd_config
+        # 设置客户端保持连接
+        sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 30/' /etc/ssh/sshd_config
+        sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/' /etc/ssh/sshd_config
 
-    # 添加防火墙规则，允许新的 SSH 端口
-    if [ "$OS" = "ubuntu" ] || [ "$OS" = "rocky" ]; then
+        # 添加防火墙规则，允许新的 SSH 端口
         if command -v firewall-cmd >/dev/null 2>&1; then
-            firewall-cmd --add-port=2222/tcp --permanent || firewall-offline-cmd --add-port=2222/tcp
+            firewall-cmd --add-port=2222/tcp --permanent
             firewall-cmd --reload
         elif command -v ufw >/dev/null 2>&1; then
             ufw allow 2222/tcp
             ufw reload
+        else
+            echo "未检测到防火墙工具，请手动配置防火墙以允许端口 2222。"
         fi
-    elif [ "$OS" = "arch" ]; then
-        if command -v firewall-cmd >/dev/null 2>&1; then
-            firewall-cmd --add-port=2222/tcp --permanent || firewall-offline-cmd --add-port=2222/tcp
-            firewall-cmd --reload
-        fi
+
+        # 重启 SSH 服务
+        systemctl restart sshd
+
+        echo "SSH 配置完成。请使用新的端口 2222 重新连接 SSH。"
     fi
-
-    # 重启 SSH 服务
-    $ENABLE_SERVICE_CMD sshd
-
-    echo "SSH 配置完成。"
 fi
 
 #########################
@@ -123,16 +115,20 @@ fi
 if prompt_user "是否需要安装基础软件包"; then
     echo "正在安装基础软件包..."
 
-    if [ "$OS" = "ubuntu" ]; then
+    if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+        $UPDATE_CMD
         $INSTALL_CMD software-properties-common
-        $UPDATE_CMD
         $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip-full vim lrzsz wget netcat-openbsd fail2ban util-linux
+        $ENABLE_SERVICE_CMD fail2ban
     elif [ "$OS" = "arch" ]; then
-        $INSTALL_CMD base-devel tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat fail2ban util-linux
-    elif [ "$OS" = "rocky" ]; then
-        $INSTALL_CMD epel-release
-        $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat yum-utils fail2ban util-linux-user
         $UPDATE_CMD
+        $INSTALL_CMD base-devel tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat fail2ban util-linux
+        $ENABLE_SERVICE_CMD fail2ban
+    elif [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
+        $INSTALL_CMD epel-release
+        $UPDATE_CMD
+        $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat yum-utils fail2ban util-linux-user
+        $ENABLE_SERVICE_CMD fail2ban
     fi
 
     echo "基础软件包安装完成。"
@@ -150,13 +146,17 @@ if prompt_user "是否需要安装 ZSH、Powerlevel10k 主题和 FZF"; then
     # 安装 Oh My Zsh（无人值守模式）
     sh -c "$(curl -fsSL ${GITHUB_URL_PREFIX}https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
 
+    # 定义 ZSH_CUSTOM 变量
+    ZSH_CUSTOM=${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}
+
     # 更改默认 shell 为 ZSH
-    chsh -s /bin/zsh $(whoami)
+    chsh -s "$(which zsh)" "$(whoami)"
 
     # 安装 Powerlevel10k 主题
-    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/romkatv/powerlevel10k.git ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/themes/powerlevel10k
+    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/romkatv/powerlevel10k.git $ZSH_CUSTOM/themes/powerlevel10k
 
-    # 设置 ZSH 主题为 Powerlevel10k
+    # 备份并替换 ZSH 配置文件
+    cp ~/.zshrc ~/.zshrc.bak
     sed -i 's/ZSH_THEME=".*"/ZSH_THEME="powerlevel10k\/powerlevel10k"/g' ~/.zshrc
 
     # 下载 Powerlevel10k 和 ZSH 配置文件
@@ -164,28 +164,28 @@ if prompt_user "是否需要安装 ZSH、Powerlevel10k 主题和 FZF"; then
     curl -fsSL ${GITHUB_URL_PREFIX}https://raw.githubusercontent.com/wzhone/init/master/zshrc -o ~/.zshrc
 
     # 安装 zsh-syntax-highlighting 和 zsh-autosuggestions 插件
-    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/zsh-users/zsh-autosuggestions ${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/zsh-users/zsh-syntax-highlighting ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-syntax-highlighting
+    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/zsh-users/zsh-autosuggestions $ZSH_CUSTOM/plugins/zsh-autosuggestions
+    git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/zsh-users/zsh-syntax-highlighting $ZSH_CUSTOM/plugins/zsh-syntax-highlighting
 
     # 安装 FZF（命令行模糊查找器）
     git clone --depth 1 ${GITHUB_URL_PREFIX}https://github.com/junegunn/fzf.git ~/.fzf
     ~/.fzf/install --all
 
-    echo "ZSH 及相关工具安装完成。"
+    echo "ZSH 及相关工具安装完成。请重新登录以应用更改。"
 fi
 
 #########################
 # 5. 关闭 SELinux（Rocky Linux）
 #########################
-if [ "$OS" = "rocky" ]; then
-    if prompt_user "是否需要关闭 SELinux"; then
-        echo "正在关闭 SELinux..."
+if [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
+    if prompt_user "是否需要将 SELinux 设置为宽容模式（permissive）"; then
+        echo "正在设置 SELinux 为宽容模式..."
 
-        # 设置 SELinux 配置为 disabled 并应用
-        sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+        # 设置 SELinux 配置为 permissive 并应用
+        sed -i 's/SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
         setenforce 0
 
-        echo "SELinux 已关闭。"
+        echo "SELinux 已设置为宽容模式。请注意，这可能降低系统安全性。"
     fi
 fi
 
@@ -196,13 +196,7 @@ if prompt_user "是否需要同步系统时间"; then
     echo "正在同步系统时间..."
 
     # 安装时间同步工具
-    if [ "$OS" = "ubuntu" ]; then
-        $INSTALL_CMD chrony
-    elif [ "$OS" = "arch" ]; then
-        $INSTALL_CMD chrony
-    elif [ "$OS" = "rocky" ]; then
-        $INSTALL_CMD chrony
-    fi
+    $INSTALL_CMD chrony
 
     # 配置 NTP 服务器
     if [ -f /etc/chrony/chrony.conf ]; then
@@ -215,15 +209,13 @@ if prompt_user "是否需要同步系统时间"; then
         # 备份原始配置文件
         cp $CHRONY_CONF ${CHRONY_CONF}.bak
 
-        # 使用多个 NTP 服务器
-        cat >$CHRONY_CONF <<EOF
-server africa.pool.ntp.org iburst
-server antarctica.pool.ntp.org iburst
-server asia.pool.ntp.org iburst
-server europe.pool.ntp.org iburst
-server north-america.pool.ntp.org iburst
-server oceania.pool.ntp.org iburst
-server south-america.pool.ntp.org iburst
+        # 注释掉默认的 server 配置
+        sed -i 's/^server/#server/' $CHRONY_CONF
+
+        # 添加新的 NTP 服务器
+        cat >>$CHRONY_CONF <<EOF
+server ntp.aliyun.com iburst
+server time.google.com iburst
 EOF
     fi
 
@@ -240,22 +232,22 @@ fi
 #########################
 # 7. 启用 TCP BBR
 #########################
-if prompt_user "是否需要启用BBR"; then
+if prompt_user "是否需要启用 BBR"; then
     echo "正在启用 BBR..."
 
-    # 配置 sysctl 设置以启用 BBR
-    echo "net.core.default_qdisc=fq" >>/etc/sysctl.conf
-    echo "net.ipv4.ip_forward = 1" >>/etc/sysctl.conf
-    echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.conf
+    # 检查并添加配置
+    grep -q "net.core.default_qdisc=fq" /etc/sysctl.conf || echo "net.core.default_qdisc=fq" >>/etc/sysctl.conf
+    grep -q "net.ipv4.tcp_congestion_control=bbr" /etc/sysctl.conf || echo "net.ipv4.tcp_congestion_control=bbr" >>/etc/sysctl.conf
 
     # 应用 sysctl 设置
     sysctl -p
 
     # 验证 BBR 模块是否已加载
-    echo -n "BBR 状态: "
-    lsmod | grep bbr
-
-    echo "BBR 已启用。"
+    if lsmod | grep -q "bbr"; then
+        echo "BBR 已成功启用。"
+    else
+        echo "BBR 启用失败，请检查内核版本是否支持 BBR。"
+    fi
 fi
 
 #########################
@@ -264,21 +256,25 @@ fi
 if prompt_user "是否需要进行系统安全审计"; then
     echo "正在进行系统安全审计..."
 
-    # 安装安全审计工具
-    $INSTALL_CMD lynis rkhunter
+    # 检查并安装安全审计工具
+    if ! command -v lynis >/dev/null 2>&1; then
+        $INSTALL_CMD lynis || echo "无法安装 Lynis，请手动安装。"
+    fi
+
+    if ! command -v rkhunter >/dev/null 2>&1; then
+        $INSTALL_CMD rkhunter || echo "无法安装 RKHunter，请手动安装。"
+    fi
 
     # 运行 Lynis 审计
     lynis audit system
-    echo "Lynis 审计日志："
-    cat /var/log/lynis.log
+    echo "Lynis 审计已完成。日志文件位于 /var/log/lynis.log。"
 
     # 更新并运行 RKHunter
     rkhunter --update
     rkhunter --check
-    echo "RKHunter 审计日志："
-    cat /var/log/rkhunter/rkhunter.log
+    echo "RKHunter 审计已完成。日志文件位于 /var/log/rkhunter/rkhunter.log。"
 
-    echo "系统安全审计完成。"
+    echo "系统安全审计完成。请查看日志文件获取详细信息。"
 fi
 
 #########################
@@ -287,13 +283,16 @@ fi
 if prompt_user "是否需要设置自动安全更新"; then
     echo "正在设置自动安全更新..."
 
-    # 安装自动更新工具
-    if [ "$OS" = "ubuntu" ]; then
+    if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
         $INSTALL_CMD unattended-upgrades
         dpkg-reconfigure -plow unattended-upgrades
+
+        # 确保自动更新配置文件正确
+        sed -i 's/^\/\/\s*"${distro_id}:${distro_codename}-updates";/"${distro_id}:${distro_codename}-updates";/' /etc/apt/apt.conf.d/50unattended-upgrades
+        sed -i 's/^\/\/\s*"${distro_id}:${distro_codename}-security";/"${distro_id}:${distro_codename}-security";/' /etc/apt/apt.conf.d/50unattended-upgrades
     elif [ "$OS" = "arch" ]; then
-        echo "Arch Linux 不支持自动安全更新，建议手动定期更新。"
-    elif [ "$OS" = "rocky" ]; then
+        echo "Arch Linux 不建议自动更新整个系统。您可以使用定期提醒或手动更新。"
+    elif [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
         $INSTALL_CMD dnf-automatic
         sed -i 's/apply_updates = no/apply_updates = yes/g' /etc/dnf/automatic.conf
         $ENABLE_SERVICE_CMD dnf-automatic.timer
@@ -308,18 +307,26 @@ fi
 if prompt_user "是否需要使用基本设置配置防火墙"; then
     echo "正在配置防火墙..."
 
-    # 启用并启动防火墙服务
-    if [ "$OS" = "ubuntu" ]; then
-        $INSTALL_CMD ufw
+    if command -v ufw >/dev/null 2>&1; then
+        FIREWALL_CMD="ufw"
+    elif command -v firewall-cmd >/dev/null 2>&1; then
+        FIREWALL_CMD="firewall-cmd"
+    else
+        if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
+            $INSTALL_CMD ufw
+            FIREWALL_CMD="ufw"
+        else
+            $INSTALL_CMD firewalld
+            FIREWALL_CMD="firewall-cmd"
+            $ENABLE_SERVICE_CMD firewalld
+        fi
+    fi
+
+    if [ "$FIREWALL_CMD" = "ufw" ]; then
         ufw allow 2222/tcp
         ufw enable
-    elif [ "$OS" = "arch" ] || [ "$OS" = "rocky" ]; then
-        $INSTALL_CMD firewalld
-        $ENABLE_SERVICE_CMD firewalld
+    elif [ "$FIREWALL_CMD" = "firewall-cmd" ]; then
         firewall-cmd --permanent --add-port=2222/tcp
-        # 可选：允许 HTTP 和 HTTPS 服务
-        # firewall-cmd --permanent --add-service=http
-        # firewall-cmd --permanent --add-service=https
         firewall-cmd --reload
     fi
 
@@ -332,20 +339,19 @@ fi
 if prompt_user "是否需要安装 Docker"; then
     echo "正在安装 Docker..."
 
-    if [ "$OS" = "ubuntu" ]; then
+    if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
         $INSTALL_CMD apt-transport-https ca-certificates curl gnupg lsb-release
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
-        add-apt-repository \
-            "deb [arch=$(dpkg --print-architecture)] https://download.docker.com/linux/ubuntu \
-          $(lsb_release -cs) \
-          stable"
+        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+        echo \
+            "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
+            $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
         $UPDATE_CMD
         $INSTALL_CMD docker-ce docker-ce-cli containerd.io
         $ENABLE_SERVICE_CMD docker
     elif [ "$OS" = "arch" ]; then
         $INSTALL_CMD docker
         $ENABLE_SERVICE_CMD docker
-    elif [ "$OS" = "rocky" ]; then
+    elif [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
         $INSTALL_CMD yum-utils
         yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo
         $INSTALL_CMD docker-ce docker-ce-cli containerd.io
@@ -353,7 +359,7 @@ if prompt_user "是否需要安装 Docker"; then
     fi
 
     # 将当前用户添加到 docker 组
-    sudo usermod -aG docker $(whoami)
+    sudo usermod -aG docker "$(whoami)"
 
     echo "Docker 安装完成。请重新登录以应用用户组更改。"
 fi
