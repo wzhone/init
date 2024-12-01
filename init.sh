@@ -84,8 +84,8 @@ if prompt_user "是否需要配置 SSH 设置"; then
         # 禁止 root 登录
         sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
 
-        # 设置最大认证尝试次数为 1
-        sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 1/' /etc/ssh/sshd_config
+        # 设置最大认证尝试次数为 2
+        sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 2/' /etc/ssh/sshd_config
 
         # 设置客户端保持连接
         sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 30/' /etc/ssh/sshd_config
@@ -182,7 +182,7 @@ if [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
         echo "正在设置 SELinux 为宽容模式..."
 
         # 设置 SELinux 配置为 permissive 并应用
-        sed -i 's/SELINUX=enforcing/SELINUX=permissive/' /etc/selinux/config
+        sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
         setenforce 0
 
         echo "SELinux 已设置为宽容模式。请注意，这可能降低系统安全性。"
@@ -214,7 +214,10 @@ if prompt_user "是否需要同步系统时间"; then
 
         # 添加新的 NTP 服务器
         cat >>$CHRONY_CONF <<EOF
-server ntp.aliyun.com iburst
+server pool.ntp.org iburst
+server time.windows.com iburst
+server time.nist.gov iburst
+server time.apple.com iburst
 server time.google.com iburst
 EOF
     fi

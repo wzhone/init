@@ -110,10 +110,12 @@ source $ZSH/oh-my-zsh.sh
 # To customize prompt, run `p10k configure` or edit ~/.p10k.zsh.
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 
-alias dnf='sudo dnf'
-alias glances='/usr/local/bin/glances -t 0.5'
 alias dunow='du -hl --max-depth=1'
+alias root='sudo -i'
 alias rs='sudo systemctl restart'
 alias st='systemctl status'
+alias systemctl='sudo systemctl'
+alias cat='sudo cat'
+alias dnf='sudo dnf'
 alias mv='mv -i'
 alias rm='rm -i'
