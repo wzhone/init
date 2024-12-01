@@ -17,17 +17,17 @@ if [ -f /etc/os-release ]; then
     OS=$ID
     case $OS in
         ubuntu|debian)
-            INSTALL_CMD="apt install -y"
+            INSTALL_CMD="sudo apt install -y"
             UPDATE_CMD="apt update -y && apt upgrade -y"
             ENABLE_SERVICE_CMD="systemctl enable --now"
             ;;
         arch)
-            INSTALL_CMD="pacman -S --noconfirm"
+            INSTALL_CMD="sudo pacman -S --noconfirm"
             UPDATE_CMD="pacman -Syu --noconfirm"
             ENABLE_SERVICE_CMD="systemctl enable --now"
             ;;
         rocky|centos|fedora)
-            INSTALL_CMD="dnf install -y"
+            INSTALL_CMD="sudo dnf install -y"
             UPDATE_CMD="dnf update -y"
             ENABLE_SERVICE_CMD="systemctl enable --now"
             ;;
@@ -51,7 +51,9 @@ else
     GITHUB_URL_PREFIX=""
 fi
 
-# 1. 修改主机名
+#########################
+# 修改主机名
+#########################
 if prompt_user "是否需要修改当前设备名称"; then
     read -rp "请输入新的主机名: " NEW_HOSTNAME
     if [ -n "$NEW_HOSTNAME" ]; then
@@ -63,7 +65,24 @@ if prompt_user "是否需要修改当前设备名称"; then
 fi
 
 #########################
-# 2. 配置 SSH
+# 关闭 SELinux（Rocky Linux）
+#########################
+if [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
+    if prompt_user "是否停用 SELinux"; then
+        echo "正在停用S SELinux..."
+
+        # 设置 SELinux 配置为 permissive 并应用
+        sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
+        setenforce 0
+
+        echo "SELinux 已停用。请注意，这可能降低系统安全性。"
+    fi
+fi
+
+
+
+#########################
+# 配置 SSH
 #########################
 if prompt_user "是否需要配置 SSH 设置"; then
     echo "警告：修改 SSH 配置可能会导致当前会话中断，请谨慎操作。"
@@ -110,7 +129,7 @@ if prompt_user "是否需要配置 SSH 设置"; then
 fi
 
 #########################
-# 3. 安装基础软件包
+# 安装基础软件包
 #########################
 if prompt_user "是否需要安装基础软件包"; then
     echo "正在安装基础软件包..."
@@ -135,7 +154,7 @@ if prompt_user "是否需要安装基础软件包"; then
 fi
 
 #########################
-# 4. 安装 ZSH、Powerlevel10k、FZF
+# 安装 ZSH、Powerlevel10k、FZF
 #########################
 if prompt_user "是否需要安装 ZSH、Powerlevel10k 主题和 FZF"; then
     echo "正在安装 ZSH 及相关工具..."
@@ -174,23 +193,9 @@ if prompt_user "是否需要安装 ZSH、Powerlevel10k 主题和 FZF"; then
     echo "ZSH 及相关工具安装完成。请重新登录以应用更改。"
 fi
 
-#########################
-# 5. 关闭 SELinux（Rocky Linux）
-#########################
-if [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
-    if prompt_user "是否需要将 SELinux 设置为宽容模式（permissive）"; then
-        echo "正在设置 SELinux 为宽容模式..."
-
-        # 设置 SELinux 配置为 permissive 并应用
-        sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config
-        setenforce 0
-
-        echo "SELinux 已设置为宽容模式。请注意，这可能降低系统安全性。"
-    fi
-fi
 
 #########################
-# 6. 同步系统时间
+# 同步系统时间
 #########################
 if prompt_user "是否需要同步系统时间"; then
     echo "正在同步系统时间..."
@@ -233,7 +238,7 @@ EOF
 fi
 
 #########################
-# 7. 启用 TCP BBR
+# 启用 TCP BBR
 #########################
 if prompt_user "是否需要启用 BBR"; then
     echo "正在启用 BBR..."
@@ -253,35 +258,9 @@ if prompt_user "是否需要启用 BBR"; then
     fi
 fi
 
-#########################
-# 8. 进行系统安全审计
-#########################
-if prompt_user "是否需要进行系统安全审计"; then
-    echo "正在进行系统安全审计..."
-
-    # 检查并安装安全审计工具
-    if ! command -v lynis >/dev/null 2>&1; then
-        $INSTALL_CMD lynis || echo "无法安装 Lynis，请手动安装。"
-    fi
-
-    if ! command -v rkhunter >/dev/null 2>&1; then
-        $INSTALL_CMD rkhunter || echo "无法安装 RKHunter，请手动安装。"
-    fi
-
-    # 运行 Lynis 审计
-    lynis audit system
-    echo "Lynis 审计已完成。日志文件位于 /var/log/lynis.log。"
-
-    # 更新并运行 RKHunter
-    rkhunter --update
-    rkhunter --check
-    echo "RKHunter 审计已完成。日志文件位于 /var/log/rkhunter/rkhunter.log。"
-
-    echo "系统安全审计完成。请查看日志文件获取详细信息。"
-fi
 
 #########################
-# 9. 设置自动安全更新
+# 设置自动安全更新
 #########################
 if prompt_user "是否需要设置自动安全更新"; then
     echo "正在设置自动安全更新..."
@@ -305,7 +284,7 @@ if prompt_user "是否需要设置自动安全更新"; then
 fi
 
 #########################
-# 10. 配置防火墙
+# 配置防火墙
 #########################
 if prompt_user "是否需要使用基本设置配置防火墙"; then
     echo "正在配置防火墙..."
@@ -337,7 +316,34 @@ if prompt_user "是否需要使用基本设置配置防火墙"; then
 fi
 
 #########################
-# 11. 安装 Docker
+# 进行系统安全审计
+#########################
+if prompt_user "是否需要进行系统安全审计"; then
+    echo "正在进行系统安全审计..."
+
+    # 检查并安装安全审计工具
+    if ! command -v lynis >/dev/null 2>&1; then
+        $INSTALL_CMD lynis || echo "无法安装 Lynis，请手动安装。"
+    fi
+
+    if ! command -v rkhunter >/dev/null 2>&1; then
+        $INSTALL_CMD rkhunter || echo "无法安装 RKHunter，请手动安装。"
+    fi
+
+    # 运行 Lynis 审计
+    lynis audit system
+    echo "Lynis 审计已完成。日志文件位于 /var/log/lynis.log。"
+
+    # 更新并运行 RKHunter
+    rkhunter --update
+    rkhunter --check
+    echo "RKHunter 审计已完成。日志文件位于 /var/log/rkhunter/rkhunter.log。"
+
+    echo "系统安全审计完成。请查看日志文件获取详细信息。"
+fi
+
+#########################
+# 安装 Docker
 #########################
 if prompt_user "是否需要安装 Docker"; then
     echo "正在安装 Docker..."
