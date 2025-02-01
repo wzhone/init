@@ -174,10 +174,6 @@ if prompt_user "是否需要安装 ZSH、Powerlevel10k 主题和 FZF"; then
     # 安装 Powerlevel10k 主题
     git clone --depth=1 ${GITHUB_URL_PREFIX}https://github.com/romkatv/powerlevel10k.git $ZSH_CUSTOM/themes/powerlevel10k
 
-    # 备份并替换 ZSH 配置文件
-    cp ~/.zshrc ~/.zshrc.bak
-    sed -i 's/ZSH_THEME=".*"/ZSH_THEME="powerlevel10k\/powerlevel10k"/g' ~/.zshrc
-
     # 下载 Powerlevel10k 和 ZSH 配置文件
     curl -fsSL ${GITHUB_URL_PREFIX}https://raw.githubusercontent.com/wzhone/init/master/p10k.zsh -o ~/.p10k.zsh
     curl -fsSL ${GITHUB_URL_PREFIX}https://raw.githubusercontent.com/wzhone/init/master/zshrc -o ~/.zshrc
