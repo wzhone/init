@@ -46,7 +46,7 @@ GITHUB_URL_PREFIX=""
 USE_GITHUB_PROXY=0
 if prompt_user "需要使用 GitHub 代理加速？"; then
     USE_GITHUB_PROXY=1
-    GITHUB_URL_PREFIX="https://ghp.ci/"
+    GITHUB_URL_PREFIX="https://ghfast.top/"
 else
     GITHUB_URL_PREFIX=""
 fi
@@ -103,9 +103,6 @@ if prompt_user "是否需要配置 SSH 设置"; then
         # 禁止 root 登录
         sed -i 's/^#\?PermitRootLogin .*/PermitRootLogin no/' /etc/ssh/sshd_config
 
-        # 设置最大认证尝试次数为 2
-        sed -i 's/^#\?MaxAuthTries .*/MaxAuthTries 2/' /etc/ssh/sshd_config
-
         # 设置客户端保持连接
         sed -i 's/^#\?ClientAliveInterval .*/ClientAliveInterval 30/' /etc/ssh/sshd_config
         sed -i 's/^#\?ClientAliveCountMax .*/ClientAliveCountMax 2/' /etc/ssh/sshd_config
@@ -137,17 +134,14 @@ if prompt_user "是否需要安装基础软件包"; then
     if [ "$OS" = "ubuntu" ] || [ "$OS" = "debian" ]; then
         $UPDATE_CMD
         $INSTALL_CMD software-properties-common
-        $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip-full vim lrzsz wget netcat-openbsd fail2ban util-linux
-        $ENABLE_SERVICE_CMD fail2ban
+        $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip-full vim lrzsz wget netcat-openbsd util-linux
     elif [ "$OS" = "arch" ]; then
         $UPDATE_CMD
-        $INSTALL_CMD base-devel tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat fail2ban util-linux
-        $ENABLE_SERVICE_CMD fail2ban
+        $INSTALL_CMD base-devel tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat util-linux
     elif [ "$OS" = "rocky" ] || [ "$OS" = "centos" ] || [ "$OS" = "fedora" ]; then
         $INSTALL_CMD epel-release
         $UPDATE_CMD
-        $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat yum-utils fail2ban util-linux-user
-        $ENABLE_SERVICE_CMD fail2ban
+        $INSTALL_CMD tmux tar git rsync telnet tree net-tools p7zip vim lrzsz wget netcat yum-utils util-linux-user
     fi
 
     echo "基础软件包安装完成。"

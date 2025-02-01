@@ -111,11 +111,11 @@ source $ZSH/oh-my-zsh.sh
 [[ ! -f ~/.p10k.zsh ]] || source ~/.p10k.zsh
 
 alias dunow='du -hl --max-depth=1'
-alias root='sudo -i'
 alias rs='sudo systemctl restart'
-alias st='systemctl status'
+alias st='sudo systemctl status'
 alias systemctl='sudo systemctl'
 alias cat='sudo cat'
 alias dnf='sudo dnf'
+alias tail='sudo tail'
 alias mv='mv -i'
 alias rm='rm -i'
