@@ -188,13 +188,20 @@ pre_check() {
     
     # 检查硬盘空间
     print_status "PROGRESS" "检查硬盘剩余空间"
-    local available_space=$(df / | awk 'NR==2 {print int($4/1024)}')
-    local available_gb=$((available_space / 1024))
-    
-    if [[ $available_space -gt 1048576 ]]; then  # 1GB = 1048576 KB
-        print_status "SUCCESS" "硬盘剩余空间: ${available_gb}GB (充足)"
+    # df --output=avail 默认以 1K-blocks（KB）输出
+    local avail_kb
+    avail_kb=$(df --output=avail / | tail -1 | tr -d ' ' 2>/dev/null)
+    if [[ -z "$avail_kb" || ! "$avail_kb" =~ ^[0-9]+$ ]]; then
+        print_status "WARNING" "无法准确获取磁盘剩余空间"
     else
-        print_status "WARNING" "硬盘剩余空间不足 1GB (当前: ${available_space}MB)，可能影响软件安装"
+        # 1 GB = 1048576 KB
+        local avail_gb=$((avail_kb / 1024 / 1024))
+        if [[ $avail_kb -lt 1048576 ]]; then
+            # 小于 1GB
+            print_status "WARNING" "硬盘剩余空间不足 1GB (当前: ${avail_gb}GB)，可能影响软件安装"
+        else
+            print_status "SUCCESS" "硬盘剩余空间: ${avail_gb}GB (充足)"
+        fi
     fi
     
     echo ""
@@ -327,14 +334,70 @@ configure_ssh() {
         print_status "SUCCESS" "SELinux 端口策略已配置"
     fi
     
-    # SSH 配置更新
+    # 让用户选择是否禁止 root 登录，并在没有其它可登录用户时给出明确警告
+    local permit_root_choice="yes"
+    if prompt_user "是否禁止 root 通过 SSH 登录（推荐）? 提示：如果系统上没有第二个可登录用户，禁止 root 登录 会导致无法远程进入 (风险很大)"; then
+        # 用户选择禁止 root 登录 -> 但先检查是否存在非 system 的可登录用户
+        local other_user
+        other_user=$(awk -F: '($3>=1000)&&($7!~/(nologin|false)/){print $1; exit}' /etc/passwd 2>/dev/null || true)
+        if [[ -z "$other_user" ]]; then
+            print_status "WARNING" "未检测到 UID>=1000 且 shell 非 nologin/false 的普通用户。禁止 root 登录 可能导致远程被锁定。"
+            if ! prompt_user "仍然继续禁止 root 登录？"; then
+                permit_root_choice="yes"
+            else
+                permit_root_choice="no"
+            fi
+        else
+            permit_root_choice="no"
+        fi
+    else
+        # 用户选择不禁止 root 登录
+        permit_root_choice="yes"
+    fi
+
+    # ssh 配置更新 (确保对现有配置行做替换/追加)
     local ssh_config="/etc/ssh/sshd_config"
-    sudo sed -i -E "s/^#?Port .*/Port $ssh_port/" "$ssh_config"
-    sudo sed -i -E 's/^#?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "$ssh_config"
-    sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin no/' "$ssh_config"
-    sudo sed -i -E 's/^#?ClientAliveInterval .*/ClientAliveInterval 30/' "$ssh_config"
-    sudo sed -i -E 's/^#?ClientAliveCountMax .*/ClientAliveCountMax 2/' "$ssh_config"
-    
+    # Port
+    if grep -q -E '^Port ' "$ssh_config"; then
+        sudo sed -i -E "s/^#?Port .*/Port $ssh_port/" "$ssh_config"
+    else
+        echo "Port $ssh_port" | sudo tee -a "$ssh_config" >/dev/null
+    fi
+    # PermitEmptyPasswords
+    if grep -q -E '^PermitEmptyPasswords ' "$ssh_config"; then
+        sudo sed -i -E 's/^#?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "$ssh_config"
+    else
+        echo "PermitEmptyPasswords no" | sudo tee -a "$ssh_config" >/dev/null
+    fi
+    # PermitRootLogin 根据选择设置
+    if [[ "$permit_root_choice" == "no" ]]; then
+        if grep -q -E '^PermitRootLogin ' "$ssh_config"; then
+            sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin no/' "$ssh_config"
+        else
+            echo "PermitRootLogin no" | sudo tee -a "$ssh_config" >/dev/null
+        fi
+        print_status "INFO" "已设置 PermitRootLogin no（禁止 root 登录）"
+    else
+        if grep -q -E '^PermitRootLogin ' "$ssh_config"; then
+            sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin yes/' "$ssh_config"
+        else
+            echo "PermitRootLogin yes" | sudo tee -a "$ssh_config" >/dev/null
+        fi
+        print_status "INFO" "保持 PermitRootLogin yes（允许 root 登录）"
+    fi
+
+    # 其余连接控制配置
+    if grep -q -E '^ClientAliveInterval ' "$ssh_config"; then
+        sudo sed -i -E 's/^#?ClientAliveInterval .*/ClientAliveInterval 30/' "$ssh_config"
+    else
+        echo "ClientAliveInterval 30" | sudo tee -a "$ssh_config" >/dev/null
+    fi
+    if grep -q -E '^ClientAliveCountMax ' "$ssh_config"; then
+        sudo sed -i -E 's/^#?ClientAliveCountMax .*/ClientAliveCountMax 2/' "$ssh_config"
+    else
+        echo "ClientAliveCountMax 2" | sudo tee -a "$ssh_config" >/dev/null
+    fi
+
     configure_firewall_port "$ssh_port"
     
     # Fail2ban 配置
@@ -679,6 +742,87 @@ show_ssh_fingerprints() {
     print_status "SUCCESS" "SSH 主机密钥指纹显示完成"
 }
 
+# 15. 创建自定义用户
+create_custom_user() {
+    record_execution "15" "创建自定义用户"
+    print_status "PROGRESS" "创建自定义用户"
+    
+    read -rp "$(echo -e "${WHITE}[?]${NC} 用户名 (小写，首字母为字母或下划线，最大32字符): ")" new_user
+    if [[ -z "$new_user" ]]; then
+        print_status "ERROR" "用户名不能为空"
+        return 1
+    fi
+    if ! [[ "$new_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]]; then
+        print_status "ERROR" "用户名格式无效"
+        return 1
+    fi
+    if id -u "$new_user" &>/dev/null; then
+        print_status "ERROR" "用户 $new_user 已存在"
+        return 1
+    fi
+
+    # 创建用户并 home
+    sudo useradd -m -s /bin/bash "$new_user"
+    check_result $? "用户 $new_user 创建成功" "用户创建失败" || return 1
+
+    # 设置密码（可留空以禁用密码登录）
+    read -rsp "$(echo -e "${WHITE}[?]${NC} 为 $new_user 设置密码（留空则不设置密码，回车跳过）: ")" passwd_input
+    echo
+    if [[ -n "$passwd_input" ]]; then
+        echo "$new_user:$passwd_input" | sudo chpasswd
+        check_result $? "用户 $new_user 密码已设置" "设置密码失败"
+    else
+        print_status "SKIP" "未为 $new_user 设置密码（建议使用 SSH 公钥登录）"
+    fi
+
+    # 选择是否加入 wheel（sudo）组
+    if prompt_user "是否将 $new_user 添加到 wheel (sudo) 组?"; then
+        sudo usermod -aG wheel "$new_user"
+        check_result $? "已将 $new_user 添加到 wheel 组" "加入 wheel 组失败"
+    fi
+
+    # 选择是否创建无密码 sudoers
+    # if prompt_user "是否为 $new_user 创建免密码 sudoers"; then
+    #     echo "$new_user ALL=(ALL) NOPASSWD:ALL" | sudo tee "/etc/sudoers.d/$new_user" >/dev/null
+    #     sudo chmod 0440 "/etc/sudoers.d/$new_user"
+    #     check_result $? "无密码 sudoers 已创建: /etc/sudoers.d/$new_user" "创建 sudoers 失败"
+    # fi
+
+    # 额外群组（逗号分隔）
+    read -rp "$(echo -e "${WHITE}[?]${NC} 追加到其他群组 (逗号分隔，例如 docker,adm)，留空跳过: ")" extra_groups
+    if [[ -n "$extra_groups" ]]; then
+        IFS=',' read -ra GARR <<< "$extra_groups"
+        for g in "${GARR[@]}"; do
+            g_trimmed=$(echo "$g" | xargs)
+            if [[ -z "$g_trimmed" ]]; then
+                continue
+            fi
+            if ! getent group "$g_trimmed" &>/dev/null; then
+                sudo groupadd "$g_trimmed"
+            fi
+            sudo usermod -aG "$g_trimmed" "$new_user"
+        done
+        print_status "SUCCESS" "已将 $new_user 添加到额外群组: $extra_groups"
+    fi
+
+    # 添加 SSH 公钥（可选）
+    if prompt_user "是否为 $new_user 添加 SSH 公钥?"; then
+        read -rp "$(echo -e "${WHITE}[?]${NC} 请粘贴 SSH 公钥（单行）: ")" user_pubkey
+        if [[ -n "$user_pubkey" ]]; then
+            sudo -u "$new_user" mkdir -p "/home/$new_user/.ssh"
+            echo "$user_pubkey" | sudo -u "$new_user" tee -a "/home/$new_user/.ssh/authorized_keys" >/dev/null
+            sudo chmod 700 "/home/$new_user/.ssh"
+            sudo chmod 600 "/home/$new_user/.ssh/authorized_keys"
+            sudo chown -R "$new_user":"$new_user" "/home/$new_user/.ssh"
+            print_status "SUCCESS" "SSH 公钥已添加到 /home/$new_user/.ssh/authorized_keys"
+        else
+            print_status "WARNING" "未提供公钥，跳过"
+        fi
+    fi
+
+    print_status "SUCCESS" "自定义用户 $new_user 创建完成"
+}
+
 # 显示菜单
 show_menu() {
     clear
@@ -701,9 +845,10 @@ show_menu() {
         "安装 Docker"
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
+        "创建自定义用户"
     )
     
-    for i in {1..14}; do
+    for i in {1..15}; do
         if is_executed "$i"; then
             local exec_time=$(get_execution_time "$i" | cut -c 6-16)
             printf "${GREEN}%2d. %-30s ✓ [%s]${NC}\n" "$i" "${menu_items[$((i-1))]}" "$exec_time"
@@ -712,8 +857,8 @@ show_menu() {
         fi
     done
     
-    echo -e "\n15. 查看执行日志"
-    echo "16. 系统预检查"
+    echo -e "\n16. 查看执行日志"
+    echo "17. 系统预检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -751,7 +896,7 @@ main() {
     
     while true; do
         show_menu
-        read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-16): ")" choice
+        read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-17): ")" choice
         
         case "$choice" in
             1) setup_proxy ;;
@@ -768,20 +913,21 @@ main() {
             12) install_docker ;;
             13) configure_ssh_keys ;;
             14) show_ssh_fingerprints ;;
-            15) view_logs ;;
-            16) pre_check ;;
+            15) create_custom_user ;;
+            16) view_logs ;;
+            17) pre_check ;;
             0) 
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
                 exit 0
                 ;;
             *)
-                print_status "WARNING" "无效选择，请输入 0-16"
+                print_status "WARNING" "无效选择，请输入 0-17"
                 sleep 1
                 ;;
         esac
         
-        if [[ "$choice" -ge 1 && "$choice" -le 14 ]] || [[ "$choice" -eq 16 ]]; then
+        if ([[ "$choice" -ge 1 && "$choice" -le 15 ]] || [[ "$choice" -eq 17 ]]); then
             echo ""
             read -rp "$(echo -e "${WHITE}[?]${NC} 按回车键返回菜单...")"
         fi
