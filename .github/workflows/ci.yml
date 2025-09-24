@@ -1,0 +1,31 @@
+name: Smoke CI
+
+on:
+  push:
+    branches: ["master"]
+
+jobs:
+  rocky:
+    name: Rocky ${{ matrix.version }} tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["8", "9", "10"]
+    continue-on-error: ${{ matrix.version == '10' }}
+    container:
+      image: rockylinux:${{ matrix.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install minimal dependencies
+        run: |
+          set -euxo pipefail
+          dnf -y install sudo iproute iputils
+
+      - name: Smoke start then exit
+        run: |
+          set -euxo pipefail
+          # First run triggers pre_check (press Enter), then select 0 to exit
+          printf "\n0\n" | bash ./init.sh
