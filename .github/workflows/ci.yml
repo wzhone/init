@@ -44,13 +44,13 @@ jobs:
           printf "\n0\n" | bash ./init.sh
 
           # Test 2: Pre-check runs successfully (17 option)
-          printf "\n17\n0\n" | bash ./init.sh
+          printf "\n17\n\n\n0\n" | bash ./init.sh
 
       - name: Test basic package installation (option 5)
         run: |
           set -euxo pipefail
           # Test basic packages installation in automated way
-          printf "\n5\n0\n" | timeout 300 bash ./init.sh || true
+          printf "\n5\n\n0\n" | timeout 300 bash ./init.sh || true
 
           # Verify some basic packages are available
           which git || echo "Git not installed"
