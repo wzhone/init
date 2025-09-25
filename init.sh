@@ -465,7 +465,7 @@ install_zsh_tools() {
     check_result $? "ZSH 安装完成" "ZSH 安装失败" || return 1
     
     # 更改默认 shell
-    sudo chsh -s "$(which zsh)" "$SCRIPT_USER"
+    sudo chsh -s "$(command -v zsh)" "$SCRIPT_USER"
     print_status "SUCCESS" "默认 shell 已更改为 ZSH"
     
     # 安装 Oh My Zsh
