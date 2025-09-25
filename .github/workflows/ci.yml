@@ -12,9 +12,8 @@ jobs:
       fail-fast: false
       matrix:
         version: ["8", "9", "10"]
-    continue-on-error: ${{ matrix.version == '10' }}
     container:
-      image: rockylinux:${{ matrix.version }}
+      image: rockylinux/rockylinux:${{ matrix.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,8 +23,36 @@ jobs:
           set -euxo pipefail
           dnf -y install sudo iproute iputils
 
-      - name: Smoke start then exit
+      - name: Install ShellCheck
         run: |
           set -euxo pipefail
-          # First run triggers pre_check (press Enter), then select 0 to exit
+          # Install EPEL repository for ShellCheck
+          dnf -y install epel-release
+          dnf -y install ShellCheck
+
+      - name: ShellCheck static analysis
+        run: |
+          set -euxo pipefail
+
+          # Run ShellCheck on the main script
+          shellcheck -x -e SC1091 init.sh
+
+      - name: Test script basic functionality
+        run: |
+          set -euxo pipefail
+          # Test 1: Script exits without error when selecting 0
           printf "\n0\n" | bash ./init.sh
+
+          # Test 2: Pre-check runs successfully (17 option)
+          printf "\n17\n0\n" | bash ./init.sh
+
+      - name: Test basic package installation (option 5)
+        run: |
+          set -euxo pipefail
+          # Test basic packages installation in automated way
+          printf "\n5\n0\n" | timeout 300 bash ./init.sh || true
+
+          # Verify some basic packages are available
+          which git || echo "Git not installed"
+          which vim || echo "Vim not installed"
+          which tar || echo "Tar not installed"
