@@ -21,7 +21,7 @@ jobs:
       - name: Install minimal dependencies
         run: |
           set -euxo pipefail
-          dnf -y install sudo iproute iputils
+          dnf -y install sudo iproute iputils ncurses
 
       - name: Install ShellCheck
         run: |
