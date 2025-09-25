@@ -12,7 +12,8 @@
 readonly LOG_DIR="/tmp"
 readonly LOG_FILE="$LOG_DIR/rocky-init.log"
 readonly CONFIG_FILE="$LOG_DIR/rocky-init.conf"
-readonly SCRIPT_USER=$(whoami)
+SCRIPT_USER=$(whoami)
+readonly SCRIPT_USER
 
 # 颜色定义
 readonly RED='\033[0;31m'
@@ -31,7 +32,8 @@ touch "$LOG_FILE" "$CONFIG_FILE" 2>/dev/null
 print_status() {
     local level="$1"
     local message="$2"
-    local timestamp="[$(date '+%Y-%m-%d %H:%M:%S')]"
+    local timestamp
+    timestamp="[$(date '+%Y-%m-%d %H:%M:%S')]"
     
     case "$level" in
         "INFO")
@@ -90,10 +92,12 @@ get_execution_time() {
 record_execution() {
     local item_number=$1
     local item_name="$2"
-    local timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
+    local timestamp
+    timestamp="$(date '+%Y-%m-%d %H:%M:%S')"
     
     if is_executed "$item_number"; then
-        local temp_file=$(mktemp)
+        local temp_file
+        temp_file=$(mktemp)
         grep -v "^$item_number|" "$CONFIG_FILE" > "$temp_file" 2>/dev/null || true
         echo "$item_number|$timestamp|$item_name" >> "$temp_file"
         mv "$temp_file" "$CONFIG_FILE"
@@ -705,7 +709,8 @@ configure_ssh_keys() {
     chmod 600 "$auth_keys"
     chown "$SCRIPT_USER:$(id -gn)" "$auth_keys"
     
-    local key_count=$(grep -c '^ssh-' "$auth_keys" 2>/dev/null || echo "0")
+    local key_count
+    key_count=$(grep -c '^ssh-' "$auth_keys" 2>/dev/null || echo "0")
     print_status "SUCCESS" "公钥已添加，共有 $key_count 个有效密钥"
 }
 
@@ -723,9 +728,12 @@ show_ssh_fingerprints() {
     for key_file in "${host_keys[@]}"; do
         if [[ -f "$key_file" ]]; then
             found_keys=1
-            local key_type=$(awk '{print $1}' "$key_file" 2>/dev/null)
-            local sha256_fp=$(ssh-keygen -lf "$key_file" 2>/dev/null | awk '{print $2}')
-            local md5_fp=$(ssh-keygen -lf "$key_file" -E md5 2>/dev/null | awk '{print $2}')
+            local key_type
+            key_type=$(awk '{print $1}' "$key_file" 2>/dev/null)
+            local sha256_fp
+            sha256_fp=$(ssh-keygen -lf "$key_file" 2>/dev/null | awk '{print $2}')
+            local md5_fp
+            md5_fp=$(ssh-keygen -lf "$key_file" -E md5 2>/dev/null | awk '{print $2}')
             
             echo -e "\n${CYAN}类型:${NC} $key_type"
             echo -e "${CYAN}SHA256:${NC} $sha256_fp"
@@ -850,7 +858,8 @@ show_menu() {
     
     for i in {1..15}; do
         if is_executed "$i"; then
-            local exec_time=$(get_execution_time "$i" | cut -c 6-16)
+            local exec_time
+            exec_time=$(get_execution_time "$i" | cut -c 6-16)
             printf "${GREEN}%2d. %-30s ✓ [%s]${NC}\n" "$i" "${menu_items[$((i-1))]}" "$exec_time"
         else
             printf "%2d. %-30s\n" "$i" "${menu_items[$((i-1))]}"
@@ -927,7 +936,7 @@ main() {
                 ;;
         esac
         
-        if ([[ "$choice" -ge 1 && "$choice" -le 15 ]] || [[ "$choice" -eq 17 ]]); then
+        if [[ "$choice" -ge 1 && "$choice" -le 15 ]] || [[ "$choice" -eq 17 ]]; then
             echo ""
             read -rp "$(echo -e "${WHITE}[?]${NC} 按回车键返回菜单...")"
         fi
