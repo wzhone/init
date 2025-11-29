@@ -368,21 +368,21 @@ configure_ssh() {
         echo "Port $ssh_port" | sudo tee -a "$ssh_config" >/dev/null
     fi
     # PermitEmptyPasswords
-    if grep -q -E '^PermitEmptyPasswords ' "$ssh_config"; then
+    if sudo grep -q -E '^PermitEmptyPasswords ' "$ssh_config"; then
         sudo sed -i -E 's/^#?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "$ssh_config"
     else
         echo "PermitEmptyPasswords no" | sudo tee -a "$ssh_config" >/dev/null
     fi
     # PermitRootLogin 根据选择设置
     if [[ "$permit_root_choice" == "no" ]]; then
-        if grep -q -E '^PermitRootLogin ' "$ssh_config"; then
+        if sudo grep -q -E '^PermitRootLogin ' "$ssh_config"; then
             sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin no/' "$ssh_config"
         else
             echo "PermitRootLogin no" | sudo tee -a "$ssh_config" >/dev/null
         fi
         print_status "INFO" "已设置 PermitRootLogin no（禁止 root 登录）"
     else
-        if grep -q -E '^PermitRootLogin ' "$ssh_config"; then
+        if sudo grep -q -E '^PermitRootLogin ' "$ssh_config"; then
             sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin yes/' "$ssh_config"
         else
             echo "PermitRootLogin yes" | sudo tee -a "$ssh_config" >/dev/null
@@ -391,12 +391,12 @@ configure_ssh() {
     fi
 
     # 其余连接控制配置
-    if grep -q -E '^ClientAliveInterval ' "$ssh_config"; then
+    if sudo grep -q -E '^ClientAliveInterval ' "$ssh_config"; then
         sudo sed -i -E 's/^#?ClientAliveInterval .*/ClientAliveInterval 30/' "$ssh_config"
     else
         echo "ClientAliveInterval 30" | sudo tee -a "$ssh_config" >/dev/null
     fi
-    if grep -q -E '^ClientAliveCountMax ' "$ssh_config"; then
+    if sudo grep -q -E '^ClientAliveCountMax ' "$ssh_config"; then
         sudo sed -i -E 's/^#?ClientAliveCountMax .*/ClientAliveCountMax 2/' "$ssh_config"
     else
         echo "ClientAliveCountMax 2" | sudo tee -a "$ssh_config" >/dev/null
