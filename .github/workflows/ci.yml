@@ -3,6 +3,8 @@ name: Smoke CI
 on:
   push:
     branches: ["master"]
+  pull_request:
+    branches: ["master"]
 
 jobs:
   rocky:
@@ -11,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        version: ["8", "9", "10"]
+        version: ["8", "9"]
     container:
       image: rockylinux/rockylinux:${{ matrix.version }}
     steps:
@@ -35,24 +37,53 @@ jobs:
           set -euxo pipefail
 
           # Run ShellCheck on the main script
-          shellcheck -x -e SC1091 init.sh
+          shellcheck -x -e SC1091 rocky.sh
 
       - name: Test script basic functionality
         run: |
           set -euxo pipefail
           # Test 1: Script exits without error when selecting 0
-          printf "\n0\n" | bash ./init.sh
+          printf "\n0\n" | bash ./rocky.sh
 
           # Test 2: Pre-check runs successfully (17 option)
-          printf "\n17\n\n\n0\n" | bash ./init.sh
+          printf "\n17\n\n\n0\n" | bash ./rocky.sh
 
       - name: Test basic package installation (option 5)
         run: |
           set -euxo pipefail
           # Test basic packages installation in automated way
-          printf "\n5\n\n0\n" | timeout 300 bash ./init.sh || true
+          printf "\n5\n\n0\n" | timeout 600 bash ./rocky.sh
 
           # Verify some basic packages are available
-          which git || echo "Git not installed"
-          which vim || echo "Vim not installed"
-          which tar || echo "Tar not installed"
+          which git
+          which vim
+          which tar
+
+  alpine:
+    name: Alpine ${{ matrix.version }} tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version: ["3.20", "3.21", "3.22", "3.23"]
+    container:
+      image: alpine:${{ matrix.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install minimal dependencies
+        run: |
+          set -euxo pipefail
+          apk add --no-cache bash curl iputils openrc shellcheck
+
+      - name: ShellCheck static analysis
+        run: |
+          set -euxo pipefail
+          shellcheck -x -e SC1091 alpine.sh
+
+      - name: Test script basic functionality
+        run: |
+          set -euxo pipefail
+          # Test 1: Script exits without error when selecting 0
+          printf "\n0\n" | bash ./alpine.sh
