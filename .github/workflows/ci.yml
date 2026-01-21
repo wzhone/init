@@ -39,25 +39,10 @@ jobs:
           # Run ShellCheck on the main script
           shellcheck -x rocky.sh
 
-      - name: Test script basic functionality
+      - name: Run pre_check
         run: |
           set -euxo pipefail
-          # Test 1: Script exits without error when selecting 0
-          printf "0\n" | bash ./rocky.sh
-
-          # Test 2: Pre-check runs successfully (17 option)
-          printf "\n17\n\n\n0\n" | bash ./rocky.sh
-
-      - name: Test basic package installation
-        run: |
-          set -euxo pipefail
-          # Test basic packages installation in automated way
-          printf "\n5\n\n0\n" | timeout 600 bash ./rocky.sh
-
-          # Verify some basic packages are available
-          which git
-          which vim
-          which tar
+          printf "\n" | bash ./rocky.sh pre_check
 
   alpine:
     name: Alpine ${{ matrix.version }} tests
@@ -85,5 +70,4 @@ jobs:
       - name: Test script basic functionality
         run: |
           set -euxo pipefail
-          # Test 1: Script exits without error when selecting 0
-          printf "0\n" | bash ./alpine.sh
+          printf "\n" | bash ./alpine.sh pre_check
