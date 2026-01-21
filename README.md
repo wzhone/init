@@ -1,4 +1,4 @@
-# Rocky Linux 初始化脚本
+# Linux 初始化脚本
 
 
 
@@ -10,17 +10,17 @@
 - 审计与可视：Lynis/RKHunter、SSH 主机指纹、执行日志
 
 
-
 ## 支持环境
 
 - Rocky Linux 8 / 9 / 10（需要 `sudo` 权限与网络）
-
+- Alpine Linux 3.15 / 3.16（需要 `sudo` 权限）
 
 
 ## 使用方式
 
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/init.sh)
+bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/rocky.sh)
+bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/alpine.sh)
 ```
 
 
