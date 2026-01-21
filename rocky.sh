@@ -339,7 +339,8 @@ configure_ssh() {
     
     # 备份配置
     local ssh_config="/etc/ssh/sshd_config"
-    local ssh_config_backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+    local ssh_config_backup
+    ssh_config_backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
     if ! sudo cp "$ssh_config" "$ssh_config_backup"; then
         print_status "ERROR" "sshd_config 备份失败，已终止"
         return 1
