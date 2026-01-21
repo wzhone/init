@@ -5,8 +5,8 @@
 
 ## 支持环境
 
-- Rocky Linux 8 - 9（systemd，需 `sudo` 与网络）
-- Alpine Linux 3.20 - 3.23（OpenRC，需 root 权限）
+- Rocky Linux 8 - 9
+- Alpine Linux 3.20 - 3.23
 
 
 ## 使用方式

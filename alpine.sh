@@ -265,7 +265,7 @@ install_zsh_tools() {
     if [[ -z "$TARGET_USER" ]]; then TARGET_USER="root"; fi
 
     # 安装 oh-my-zsh（静默忽略失败）
-    su - "$TARGET_USER" -c 'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended' >/dev/null 2>&1 || true
+    su - "$TARGET_USER" -c "sh -c \"\$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)\" \"\" --unattended" >/dev/null 2>&1 || true
 
     # 默认使用 /bin/zsh 作为 shell（BusyBox adduser 支持 -s；对于现有用户可用 chsh 或直接修改 /etc/passwd）
     if command -v chsh >/dev/null 2>&1; then
@@ -361,7 +361,9 @@ install_docker() {
     # 将当前（或 sudo 调用者）加入 docker 组
     addgroup -S docker >/dev/null 2>&1 || true
     local TARGET_USER="${SUDO_USER:-$USER}"
-    [[ -n "$TARGET_USER" ]] && addgroup "$TARGET_USER" docker >/dev/null 2>&1 || true
+    if [[ -n "$TARGET_USER" ]]; then
+        addgroup "$TARGET_USER" docker >/dev/null 2>&1 || true
+    fi
 }
 
 # ========== 11) 配置 SSH 公钥 ==========

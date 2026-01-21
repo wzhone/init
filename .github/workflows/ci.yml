@@ -37,7 +37,7 @@ jobs:
           set -euxo pipefail
 
           # Run ShellCheck on the main script
-          shellcheck -x -e SC1091 rocky.sh
+          shellcheck -x rocky.sh
 
       - name: Test script basic functionality
         run: |
@@ -80,7 +80,7 @@ jobs:
       - name: ShellCheck static analysis
         run: |
           set -euxo pipefail
-          shellcheck -x -e SC1091 alpine.sh
+          shellcheck -x alpine.sh
 
       - name: Test script basic functionality
         run: |
