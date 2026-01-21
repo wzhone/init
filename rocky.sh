@@ -931,11 +931,8 @@ view_logs() {
 
 # 主程序
 main() {
-    # 检查用户权限
-    if [[ $EUID -eq 0 ]]; then
-        print_status "WARNING" "建议使用普通用户运行此脚本"
-    fi
-    
+
+
     # 初始化检查
     check_os
     
