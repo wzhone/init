@@ -944,7 +944,10 @@ main() {
     
     while true; do
         show_menu
-        read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-17): ")" choice
+        if ! read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-17): ")" choice; then
+            print_status "WARNING" "输入结束，已退出"
+            exit 0
+        fi
         
         case "$choice" in
             1) setup_proxy ;;
@@ -983,4 +986,8 @@ main() {
 }
 
 # 脚本入口
-main "$@"
+if [[ $# -gt 0 ]]; then
+    "$@"
+else
+    main
+fi
