@@ -8,8 +8,14 @@
 #   [>] 跳过 - 跳过的操作
 #   [?] 输入 - 需要用户输入
 
-# 日志和配置文件路径（保持原有风格）
-readonly LOG_DIR="/tmp"
+# 日志和配置文件路径
+SCRIPT_USER="${SUDO_USER:-$USER}"
+[[ -z "$SCRIPT_USER" ]] && SCRIPT_USER="root"
+readonly SCRIPT_USER
+USER_HOME="$(getent passwd "$SCRIPT_USER" | cut -d: -f6)"
+[[ -z "$USER_HOME" ]] && USER_HOME="$HOME"
+[[ -z "$USER_HOME" ]] && USER_HOME="/root"
+readonly LOG_DIR="$USER_HOME/.local/state/init"
 readonly LOG_FILE="$LOG_DIR/alpine-init.log"
 readonly CONFIG_FILE="$LOG_DIR/alpine-init.conf"
 
@@ -23,7 +29,9 @@ WHITE='\033[1;37m'
 NC='\033[0m' # No Color
 
 mkdir -p "$LOG_DIR"
-touch "$LOG_FILE"
+chmod 700 "$LOG_DIR" 2>/dev/null || true
+touch "$LOG_FILE" "$CONFIG_FILE"
+chmod 600 "$LOG_FILE" "$CONFIG_FILE" 2>/dev/null || true
 
 print_status() {
     local level="$1"
@@ -169,7 +177,7 @@ configure_ssh() {
     }
     _any_authorized_key() {
         # 检测 /root 和 /home/* 下 authorized_keys 是否存在且非空
-        find /home -maxdepth 3 -type f -name authorized_keys -size +0c 2>/dev/null
+        find /root /home -maxdepth 3 -type f -name authorized_keys -size +0c -print -quit 2>/dev/null | grep -q .
     }
 
     local will_disable_root="yes"

@@ -9,11 +9,14 @@
 #   [?] 输入 - 需要用户输入
 
 # 日志和配置文件路径
-readonly LOG_DIR="/tmp"
+SCRIPT_USER="${SUDO_USER:-$(whoami)}"
+readonly SCRIPT_USER
+USER_HOME="$(getent passwd "$SCRIPT_USER" | cut -d: -f6)"
+[[ -z "$USER_HOME" ]] && USER_HOME="$HOME"
+[[ -z "$USER_HOME" ]] && USER_HOME="/root"
+readonly LOG_DIR="$USER_HOME/.local/state/init"
 readonly LOG_FILE="$LOG_DIR/rocky-init.log"
 readonly CONFIG_FILE="$LOG_DIR/rocky-init.conf"
-SCRIPT_USER=$(whoami)
-readonly SCRIPT_USER
 
 # 颜色定义
 readonly RED='\033[0;31m'
@@ -26,7 +29,10 @@ readonly WHITE='\033[1;37m'
 readonly NC='\033[0m'
 
 # 初始化日志文件
+mkdir -p "$LOG_DIR"
+chmod 700 "$LOG_DIR" 2>/dev/null || true
 touch "$LOG_FILE" "$CONFIG_FILE" 2>/dev/null
+chmod 600 "$LOG_FILE" "$CONFIG_FILE" 2>/dev/null || true
 
 # 统一输出函数
 print_status() {
@@ -158,11 +164,14 @@ configure_firewall_port() {
         if sudo firewall-cmd --add-port="$port"/tcp --permanent &>/dev/null && \
            sudo firewall-cmd --reload &>/dev/null; then
             print_status "SUCCESS" "端口 $port 已开放"
+            return 0
         else
-            print_status "WARNING" "防火墙配置可能失败"
+            print_status "ERROR" "防火墙配置失败"
+            return 1
         fi
     else
-        print_status "WARNING" "未检测到防火墙服务"
+        print_status "ERROR" "未检测到防火墙服务，无法保证新端口可用"
+        return 1
     fi
 }
 
@@ -288,7 +297,7 @@ disable_selinux() {
     
     print_status "PROGRESS" "禁用 SELinux"
     
-    sudo sed -i 's/SELINUX=enforcing/SELINUX=disabled/' /etc/selinux/config &>/dev/null
+    sudo sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config &>/dev/null
     sudo setenforce 0 &>/dev/null
     
     print_status "SUCCESS" "SELinux 已禁用（重启后生效）"
@@ -329,13 +338,29 @@ configure_ssh() {
     check_result $? "" "SELinux 工具安装失败"
     
     # 备份配置
-    sudo cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+    local ssh_config="/etc/ssh/sshd_config"
+    local ssh_config_backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
+    if ! sudo cp "$ssh_config" "$ssh_config_backup"; then
+        print_status "ERROR" "sshd_config 备份失败，已终止"
+        return 1
+    fi
     
     # SELinux 端口配置
     if [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
-        sudo semanage port -a -t ssh_port_t -p tcp "$ssh_port" &>/dev/null || \
-        sudo semanage port -m -t ssh_port_t -p tcp "$ssh_port" &>/dev/null
-        print_status "SUCCESS" "SELinux 端口策略已配置"
+        if ! command -v semanage &>/dev/null; then
+            print_status "ERROR" "未找到 semanage，无法配置 SELinux 端口"
+            return 1
+        fi
+        if sudo semanage port -l 2>/dev/null | grep -qE "^ssh_port_t.*\\b${ssh_port}\\b"; then
+            print_status "INFO" "SELinux 端口策略已存在: $ssh_port"
+        else
+            if sudo semanage port -a -t ssh_port_t -p tcp "$ssh_port" &>/dev/null; then
+                print_status "SUCCESS" "SELinux 端口策略已配置"
+            else
+                print_status "ERROR" "SELinux 端口策略配置失败"
+                return 1
+            fi
+        fi
     fi
     
     # 让用户选择是否禁止 root 登录，并在没有其它可登录用户时给出明确警告
@@ -359,8 +384,13 @@ configure_ssh() {
         permit_root_choice="yes"
     fi
 
+    # 防火墙放行（失败则不改 sshd_config）
+    if ! configure_firewall_port "$ssh_port"; then
+        print_status "ERROR" "防火墙端口配置失败，已终止 SSH 端口变更"
+        return 1
+    fi
+
     # ssh 配置更新 (确保对现有配置行做替换/追加)
-    local ssh_config="/etc/ssh/sshd_config"
     # Port
     if grep -q -E '^Port ' "$ssh_config"; then
         sudo sed -i -E "s/^#?Port .*/Port $ssh_port/" "$ssh_config"
@@ -402,8 +432,6 @@ configure_ssh() {
         echo "ClientAliveCountMax 2" | sudo tee -a "$ssh_config" >/dev/null
     fi
 
-    configure_firewall_port "$ssh_port"
-    
     # Fail2ban 配置
     if prompt_user "安装 fail2ban 防护"; then
         print_status "PROGRESS" "配置 fail2ban"
@@ -425,9 +453,22 @@ EOF
         print_status "SUCCESS" "fail2ban 已配置 (端口: $ssh_port)"
     fi
     
+    # 重启前校验配置
+    if ! sudo sshd -t -f "$ssh_config" &>/dev/null; then
+        print_status "ERROR" "sshd_config 校验失败，已回滚"
+        sudo cp "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        return 1
+    fi
+
     # 重启 SSH 服务
-    sudo systemctl restart sshd
-    check_result $? "SSH 配置完成，端口: $ssh_port" "SSH 服务重启失败"
+    if sudo systemctl restart sshd &>/dev/null; then
+        print_status "SUCCESS" "SSH 配置完成，端口: $ssh_port"
+    else
+        print_status "ERROR" "SSH 服务重启失败，尝试回滚配置"
+        sudo cp "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        sudo systemctl restart sshd &>/dev/null || true
+        return 1
+    fi
 }
 
 # 5. 安装基础软件包
