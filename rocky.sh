@@ -393,7 +393,7 @@ configure_ssh() {
 
     # ssh 配置更新 (确保对现有配置行做替换/追加)
     # Port
-    if grep -q -E '^Port ' "$ssh_config"; then
+    if sudo grep -q -E '^Port ' "$ssh_config"; then
         sudo sed -i -E "s/^#?Port .*/Port $ssh_port/" "$ssh_config"
     else
         echo "Port $ssh_port" | sudo tee -a "$ssh_config" >/dev/null
@@ -616,7 +616,7 @@ sync_system_time() {
     check_result $? "时间同步服务已启用" "时间同步配置失败"
     
     sleep 2
-    chronyc sources 2>/dev/null | head -5
+    sudo chronyc sources 2>/dev/null | head -5
 }
 
 # 8. 启用 TCP BBR
@@ -749,7 +749,7 @@ configure_ssh_keys() {
     # 添加公钥
     echo "$public_key" >> "$auth_keys"
     chmod 600 "$auth_keys"
-    chown "$SCRIPT_USER:$(id -gn)" "$auth_keys"
+    sudo chown "$SCRIPT_USER:$(id -gn)" "$auth_keys"
     
     local key_count
     key_count=$(grep -c '^ssh-' "$auth_keys" 2>/dev/null || echo "0")
