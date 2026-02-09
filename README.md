@@ -18,6 +18,7 @@ bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/rocky.sh)
 
 Alpine Linux：
 ```bash
+apk add --no-cache bash curl
 bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/alpine.sh)
 ```
 
