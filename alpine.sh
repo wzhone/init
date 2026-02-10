@@ -752,7 +752,10 @@ main() {
 
     while true; do
         show_menu
-        read -rp "请输入序号 (0-15): " choice
+        if ! read -rp "请输入序号 (0-15): " choice; then
+            print_status "WARNING" "输入结束，已退出"
+            exit 0
+        fi
         case "$choice" in
             1) change_hostname ;;
             2) configure_ssh ;;
@@ -782,7 +785,10 @@ main() {
 
         if [[ "$choice" =~ ^([1-9]|1[0-5])$ ]]; then
             echo ""
-            read -rp "[?] 按回车键返回菜单..."
+            if ! read -rp "[?] 按回车键返回菜单..."; then
+                print_status "WARNING" "输入结束，已退出"
+                exit 0
+            fi
         fi
     done
 }

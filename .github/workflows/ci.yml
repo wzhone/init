@@ -70,4 +70,5 @@ jobs:
       - name: Test script basic functionality
         run: |
           set -euxo pipefail
-          printf "\n" | bash ./alpine.sh pre_check
+          # 15=系统预检查, 第二个换行=返回菜单, 0=退出
+          printf "15\n\n0\n" | bash ./alpine.sh
