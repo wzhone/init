@@ -26,14 +26,14 @@ bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/alpine.sh)
 ## 功能概览
 
 Rocky 版：
-- 基础系统：主机名、代理、时间同步（chrony）、TCP BBR、journald 持久化日志
+- 基础系统：主机名、代理、时间同步（chrony）、TCP BBR、Swap、journald 持久化日志
 - 安全加固：SSH 端口/空密码/可选禁 root、Fail2ban、AIDE、自动安全更新
 - 开发环境：基础工具包、Zsh + Oh My Zsh + 主题/插件 + FZF
 - 审计与可视：Lynis / RKHunter、SSH 主机指纹、执行日志
 - 其他：Docker CE、SSH 公钥、用户创建
 
 Alpine 版：
-- 基础系统：主机名、edge 仓库、时间同步（chrony）、TCP BBR、时区
+- 基础系统：主机名、edge 仓库、时间同步（chrony）、TCP BBR、Swap、时区
 - 安全加固：SSH 加固（不改端口）、自动安全更新
 - 开发环境：基础工具包
 - 可视与记录：SSH 主机指纹、执行日志
@@ -52,15 +52,16 @@ Rocky 版（`rocky.sh`）：
 7. Zsh 工具链（Oh My Zsh / 主题 / 插件 / FZF）
 8. 时间同步（chrony）
 9. TCP BBR
-10. 自动安全更新
-11. AIDE 文件完整性
-12. 安全审计
-13. Docker CE
-14. SSH 公钥配置
-15. SSH 主机密钥指纹
-16. journald 持久化日志
-17. 查看执行日志
-18. 系统检查
+10. 创建 Swap
+11. 自动安全更新
+12. AIDE 文件完整性
+13. 安全审计
+14. Docker CE
+15. SSH 公钥配置
+16. SSH 主机密钥指纹
+17. journald 持久化日志
+18. 查看执行日志
+19. 系统检查
 
 Alpine 版（`alpine.sh`）：
 1. 修改主机名
@@ -70,13 +71,14 @@ Alpine 版（`alpine.sh`）：
 5. 安装基础软件包
 6. 同步系统时间
 7. 启用 TCP BBR
-8. 设置自动安全更新
-9. 安装 Docker
-10. 配置 SSH 公钥
-11. 显示 SSH 主机密钥指纹
-12. 设置系统时区
-13. 查看执行日志
-14. 系统检查
+8. 创建 Swap
+9. 设置自动安全更新
+10. 安装 Docker
+11. 配置 SSH 公钥
+12. 显示 SSH 主机密钥指纹
+13. 设置系统时区
+14. 查看执行日志
+15. 系统检查
 
 
 ## 日志与记录
@@ -88,7 +90,7 @@ Alpine 版（`alpine.sh`）：
 
 ## 系统检查
 
-两个脚本的系统检查会合并运行前置检查与状态巡检，包含网络、磁盘、CPU、内存、Swap、负载、关键服务和关键配置状态。
+两个脚本的系统检查会合并运行前置检查与状态巡检，包含磁盘、CPU、内存、Swap、关键服务和关键配置状态。
 
 
 ## 安全提示
