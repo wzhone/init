@@ -449,11 +449,20 @@ net.ipv4.tcp_congestion_control = bbr
 EOF
         chmod 644 "$bbr_conf_file"
         sysctl -p "$bbr_conf_file" >/dev/null 2>&1
-        check_result $? "BBR 已尝试启用（需内核支持）" "sysctl 加载失败"
+        check_result $? "BBR 配置已加载" "sysctl 加载失败" || return 1
     else
         print_status "INFO" "BBR 配置文件 $bbr_conf_file 已存在，跳过创建。"
         sysctl -p "$bbr_conf_file" >/dev/null 2>&1
-        check_result $? "BBR 配置已加载" "BBR 配置加载失败"
+        check_result $? "BBR 配置已加载" "BBR 配置加载失败" || return 1
+    fi
+
+    local current_congestion_control
+    current_congestion_control=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    if [[ "$current_congestion_control" == "bbr" ]]; then
+        print_status "SUCCESS" "BBR 已启用"
+    else
+        print_status "WARNING" "BBR 未生效，当前拥塞控制: ${current_congestion_control:-未知}"
+        return 1
     fi
 }
 
