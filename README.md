@@ -46,34 +46,34 @@ Rocky 版（`rocky.sh`）：
 1. 设置代理
 2. 修改主机名
 3. SELinux（含风险提示）
-4. SSH（端口、root 登录可选、Fail2ban）
-5. 基础软件包
-6. Zsh 工具链（Oh My Zsh / 主题 / 插件 / FZF）
-7. 时间同步（chrony）
-8. TCP BBR
-9. 自动安全更新
-10. AIDE 文件完整性
-11. 安全审计
-12. Docker CE
-13. SSH 公钥配置
-14. SSH 主机密钥指纹
-15. 创建自定义用户
+4. 创建自定义用户
+5. SSH（端口、root 登录可选、Fail2ban）
+6. 基础软件包
+7. Zsh 工具链（Oh My Zsh / 主题 / 插件 / FZF）
+8. 时间同步（chrony）
+9. TCP BBR
+10. 自动安全更新
+11. AIDE 文件完整性
+12. 安全审计
+13. Docker CE
+14. SSH 公钥配置
+15. SSH 主机密钥指纹
 16. journald 持久化日志
 17. 查看执行日志
 18. 系统预检查
 
 Alpine 版（`alpine.sh`）：
 1. 修改主机名
-2. 配置 SSH
-3. 启用 edge 仓库
-4. 安装基础软件包
-5. 同步系统时间
-6. 启用 TCP BBR
-7. 设置自动安全更新
-8. 安装 Docker
-9. 配置 SSH 公钥
-10. 显示 SSH 主机密钥指纹
-11. 创建自定义用户（含 sudo/wheel）
+2. 创建自定义用户
+3. 配置 SSH
+4. 启用 edge 仓库
+5. 安装基础软件包
+6. 同步系统时间
+7. 启用 TCP BBR
+8. 设置自动安全更新
+9. 安装 Docker
+10. 配置 SSH 公钥
+11. 显示 SSH 主机密钥指纹
 12. 设置系统时区
 13. 查看执行日志
 14. 系统预检查
@@ -83,6 +83,7 @@ Alpine 版（`alpine.sh`）：
 
 - Rocky：`~/.local/state/init/rocky-init.log`（日志）、`~/.local/state/init/rocky-init.conf`（执行记录）
 - Alpine：`~/.local/state/init/alpine-init.log`（日志）、`~/.local/state/init/.steps/`（执行记录）
+- 执行记录仅在菜单项成功结束后写入；失败、跳过或中途终止不会标记为已完成。
 - 目录权限默认为 700，日志/记录文件为 600。
 
 

@@ -118,6 +118,24 @@ is_executed() {
     grep -q "^$item_number|" "$CONFIG_FILE" 2>/dev/null
 }
 
+run_menu_item() {
+    local item_number=$1
+    local item_name="$2"
+    local status
+    shift 2
+
+    "$@"
+    status=$?
+    if [[ $status -eq 0 ]]; then
+        record_execution "$item_number" "$item_name"
+        return 0
+    fi
+    if [[ $status -eq 77 ]]; then
+        return 0
+    fi
+    return "$status"
+}
+
 # 检查操作系统
 check_os() {
     if [[ ! -f /etc/os-release ]]; then
@@ -223,14 +241,13 @@ pre_check() {
 
 # 1. 设置代理
 setup_proxy() {
-    record_execution "1" "设置代理"
     print_status "INFO" "配置 HTTP 代理"
 
     read -rp "$(echo -e "${WHITE}[?]${NC} 代理地址 (host:port，留空跳过): ")" proxy_address
 
     if [[ -z "$proxy_address" ]]; then
         print_status "SKIP" "代理设置已跳过"
-        return 0
+        return 77
     fi
 
     # 验证代理地址格式
@@ -250,7 +267,6 @@ setup_proxy() {
 
 # 2. 修改主机名
 change_hostname() {
-    record_execution "2" "修改主机名"
     print_status "INFO" "当前主机名: $(hostname)"
     
     read -rp "$(echo -e "${WHITE}[?]${NC} 新主机名: ")" new_hostname
@@ -272,8 +288,6 @@ change_hostname() {
 
 # 3. 关闭 SELinux
 disable_selinux() {
-    record_execution "3" "关闭 SELinux"
-    
     current_status=$(getenforce 2>/dev/null || echo "Unknown")
     print_status "INFO" "当前 SELinux 状态: $current_status"
     
@@ -292,7 +306,7 @@ disable_selinux() {
     
     if ! prompt_user "确认要关闭 SELinux 吗？"; then
         print_status "SKIP" "SELinux 保持当前状态"
-        return 0
+        return 77
     fi
     
     print_status "PROGRESS" "禁用 SELinux"
@@ -303,9 +317,8 @@ disable_selinux() {
     print_status "SUCCESS" "SELinux 已禁用（重启后生效）"
 }
 
-# 4. 配置 SSH
+# 5. 配置 SSH
 configure_ssh() {
-    record_execution "4" "配置 SSH"
     print_status "PROGRESS" "配置 SSH 安全设置"
     
     # 获取用户输入的SSH端口
@@ -472,9 +485,8 @@ EOF
     fi
 }
 
-# 5. 安装基础软件包
+# 6. 安装基础软件包
 install_basic_packages() {
-    record_execution "5" "安装基础软件包"
     print_status "PROGRESS" "安装基础软件包"
     
     local packages=(
@@ -489,16 +501,36 @@ install_basic_packages() {
     check_result $? "基础软件包安装完成" "基础软件包安装失败"
 }
 
-# 6. 安装 ZSH 工具链
+# 7. 安装 ZSH 工具链
 install_zsh_tools() {
-    record_execution "6" "安装 ZSH 工具链"
     print_status "PROGRESS" "安装 ZSH 和相关工具"
+
+    local zsh_user
+    local zsh_home
+    read -rp "$(echo -e "${WHITE}[?]${NC} ZSH 工具链安装目标用户（默认 $SCRIPT_USER）: ")" zsh_user
+    zsh_user=${zsh_user:-$SCRIPT_USER}
+
+    if ! id -u "$zsh_user" &>/dev/null; then
+        print_status "ERROR" "用户不存在: $zsh_user"
+        return 1
+    fi
+
+    zsh_home="$(getent passwd "$zsh_user" | cut -d: -f6)"
+    if [[ -z "$zsh_home" || ! -d "$zsh_home" ]]; then
+        print_status "ERROR" "无法找到 $zsh_user 的 home 目录"
+        return 1
+    fi
+
+    if ! prompt_user "确认要为 $zsh_user 安装 ZSH 工具链"; then
+        print_status "SKIP" "已跳过 ZSH 工具链安装"
+        return 77
+    fi
     
     # 检查依赖
     for cmd in git curl; do
         if ! command -v "$cmd" &>/dev/null; then
             sudo dnf install -y "$cmd" &>/dev/null
-            check_result $? "$cmd 安装完成" "$cmd 安装失败"
+            check_result $? "$cmd 安装完成" "$cmd 安装失败" || return 1
         fi
     done
     
@@ -507,38 +539,54 @@ install_zsh_tools() {
     check_result $? "ZSH 安装完成" "ZSH 安装失败" || return 1
     
     # 更改默认 shell
-    sudo chsh -s "$(command -v zsh)" "$SCRIPT_USER"
-    print_status "SUCCESS" "默认 shell 已更改为 ZSH"
+    sudo chsh -s "$(command -v zsh)" "$zsh_user"
+    check_result $? "$zsh_user 的默认 shell 已更改为 ZSH" "默认 shell 更改失败" || return 1
     
     # 安装 Oh My Zsh
-    if [[ ! -d "$HOME/.oh-my-zsh" ]]; then
+    if [[ ! -d "$zsh_home/.oh-my-zsh" ]]; then
         print_status "PROGRESS" "安装 Oh My Zsh"
-        sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-        check_result $? "Oh My Zsh 安装完成" "Oh My Zsh 安装失败"
+        sudo -u "$zsh_user" env HOME="$zsh_home" RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
+            sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+        check_result $? "Oh My Zsh 安装完成" "Oh My Zsh 安装失败" || return 1
     fi
     
-    ZSH_CUSTOM="${ZSH_CUSTOM:-$HOME/.oh-my-zsh/custom}"
+    local zsh_custom="$zsh_home/.oh-my-zsh/custom"
+    sudo -u "$zsh_user" mkdir -p "$zsh_custom/themes" "$zsh_custom/plugins"
     
     # 安装 Powerlevel10k 主题
-    if [[ ! -d "$ZSH_CUSTOM/themes/powerlevel10k" ]]; then
+    if [[ ! -d "$zsh_custom/themes/powerlevel10k" ]]; then
         print_status "PROGRESS" "安装 Powerlevel10k 主题"
-        git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$ZSH_CUSTOM/themes/powerlevel10k"
-        check_result $? "Powerlevel10k 主题安装完成" "主题安装失败"
+        sudo -u "$zsh_user" env HOME="$zsh_home" \
+            git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$zsh_custom/themes/powerlevel10k"
+        check_result $? "Powerlevel10k 主题安装完成" "主题安装失败" || return 1
     fi
     
     # 修改 .zshrc 配置文件
     print_status "PROGRESS" "配置 ZSH 设置"
+    local zshrc="$zsh_home/.zshrc"
+    if [[ ! -f "$zshrc" ]]; then
+        sudo -u "$zsh_user" touch "$zshrc"
+    fi
     
     # 修改主题设置
-    sed -i 's/^ZSH_THEME="robbyrussell"$/ZSH_THEME="powerlevel10k\/powerlevel10k"/' "$HOME/.zshrc"
-    check_result $? "ZSH 主题配置完成" "ZSH 主题配置失败"
+    if sudo grep -q '^ZSH_THEME=' "$zshrc"; then
+        sudo sed -i 's|^ZSH_THEME=.*|ZSH_THEME="powerlevel10k/powerlevel10k"|' "$zshrc"
+    else
+        echo 'ZSH_THEME="powerlevel10k/powerlevel10k"' | sudo tee -a "$zshrc" >/dev/null
+    fi
+    check_result $? "ZSH 主题配置完成" "ZSH 主题配置失败" || return 1
     
     # 修改插件设置
-    sed -i 's/^plugins=(git)$/plugins=(git zsh-syntax-highlighting zsh-autosuggestions)/' "$HOME/.zshrc"
-    check_result $? "ZSH 插件配置完成" "ZSH 插件配置失败"
+    if sudo grep -q '^plugins=' "$zshrc"; then
+        sudo sed -i 's/^plugins=.*/plugins=(git zsh-syntax-highlighting zsh-autosuggestions)/' "$zshrc"
+    else
+        echo 'plugins=(git zsh-syntax-highlighting zsh-autosuggestions)' | sudo tee -a "$zshrc" >/dev/null
+    fi
+    check_result $? "ZSH 插件配置完成" "ZSH 插件配置失败" || return 1
     
     # 添加自定义 alias 到 .zshrc 末尾
-    cat >> "$HOME/.zshrc" << 'EOF'
+    if ! sudo grep -q '# 自定义 alias' "$zshrc"; then
+        sudo tee -a "$zshrc" >/dev/null << 'EOF'
 
 # 自定义 alias
 alias dunow='du -hl --max-depth=1'
@@ -555,7 +603,10 @@ alias rm='rm -i'
 # 减少更新提醒
 export UPDATE_ZSH_DAYS=365
 EOF
-    check_result $? "自定义 alias 添加完成" "alias 配置失败"
+        check_result $? "自定义 alias 添加完成" "alias 配置失败" || return 1
+    else
+        print_status "INFO" "自定义 alias 已存在，跳过追加"
+    fi
 
     # 安装插件
     local plugins=(
@@ -566,29 +617,31 @@ EOF
     for plugin_info in "${plugins[@]}"; do
         local plugin_name="${plugin_info%|*}"
         local plugin_url="${plugin_info#*|}"
-        local plugin_dir="$ZSH_CUSTOM/plugins/$plugin_name"
+        local plugin_dir="$zsh_custom/plugins/$plugin_name"
         
         if [[ ! -d "$plugin_dir" ]]; then
             print_status "PROGRESS" "安装 $plugin_name 插件"
-            git clone --depth=1 "$plugin_url" "$plugin_dir"
-            check_result $? "$plugin_name 插件安装完成" "$plugin_name 插件安装失败"
+            sudo -u "$zsh_user" env HOME="$zsh_home" git clone --depth=1 "$plugin_url" "$plugin_dir"
+            check_result $? "$plugin_name 插件安装完成" "$plugin_name 插件安装失败" || return 1
         fi
     done
     
     # 安装 FZF
-    if [[ ! -d "$HOME/.fzf" ]]; then
+    if [[ ! -d "$zsh_home/.fzf" ]]; then
         print_status "PROGRESS" "安装 FZF"
-        git clone --depth 1 https://github.com/junegunn/fzf.git ~/.fzf
-        ~/.fzf/install --all
-        check_result $? "FZF 安装完成" "FZF 安装失败"
+        sudo -u "$zsh_user" env HOME="$zsh_home" git clone --depth 1 https://github.com/junegunn/fzf.git "$zsh_home/.fzf"
+        check_result $? "FZF 下载完成" "FZF 下载失败" || return 1
+        sudo -u "$zsh_user" env HOME="$zsh_home" "$zsh_home/.fzf/install" --all
+        check_result $? "FZF 安装完成" "FZF 安装失败" || return 1
     fi
+
+    sudo chown -R "$zsh_user":"$(id -gn "$zsh_user")" "$zsh_home/.oh-my-zsh" "$zsh_home/.zshrc" "$zsh_home/.fzf" 2>/dev/null || true
     
-    print_status "SUCCESS" "ZSH 工具链安装完成，请重新登录应用更改"
+    print_status "SUCCESS" "ZSH 工具链已为 $zsh_user 安装完成，请重新登录应用更改"
 }
 
-# 7. 同步系统时间
+# 8. 同步系统时间
 sync_system_time() {
-    record_execution "7" "同步系统时间"
     print_status "PROGRESS" "配置时间同步"
     
     sudo dnf install -y chrony &>/dev/null
@@ -619,9 +672,8 @@ sync_system_time() {
     sudo chronyc sources 2>/dev/null | head -5
 }
 
-# 8. 启用 TCP BBR
+# 9. 启用 TCP BBR
 enable_bbr() {
-    record_execution "8" "启用 TCP BBR"
     print_status "PROGRESS" "启用 BBR 拥塞控制"
     
     local sysctl_conf="/etc/sysctl.conf"
@@ -645,9 +697,8 @@ enable_bbr() {
     fi
 }
 
-# 9. 设置自动安全更新
+# 10. 设置自动安全更新
 setup_auto_updates() {
-    record_execution "9" "设置自动安全更新"
     print_status "PROGRESS" "配置自动安全更新"
     
     sudo dnf install -y dnf-automatic
@@ -661,12 +712,12 @@ setup_auto_updates() {
         print_status "SUCCESS" "自动更新已配置"
     else
         print_status "ERROR" "自动更新配置失败"
+        return 1
     fi
 }
 
-# 10. 配置 AIDE
+# 11. 配置 AIDE
 configure_aide() {
-    record_execution "10" "配置 AIDE"
     print_status "PROGRESS" "安装文件完整性检测工具"
     
     sudo dnf install -y aide
@@ -693,9 +744,8 @@ configure_aide() {
     print_status "SUCCESS" "AIDE 配置完成"
 }
 
-# 11. 系统安全审计
+# 12. 系统安全审计
 security_audit() {
-    record_execution "11" "系统安全审计"
     print_status "PROGRESS" "执行系统安全审计"
     
     sudo dnf install -y lynis rkhunter 
@@ -710,9 +760,8 @@ security_audit() {
     print_status "SUCCESS" "RKHunter 审计完成，日志: /var/log/rkhunter/rkhunter.log"
 }
 
-# 12. 安装 Docker
+# 13. 安装 Docker
 install_docker() {
-    record_execution "12" "安装 Docker"
     print_status "PROGRESS" "安装 Docker CE"
     
     sudo dnf install -y yum-utils &>/dev/null
@@ -726,9 +775,8 @@ install_docker() {
     print_status "SUCCESS" "Docker 已安装，请重新登录应用用户组更改"
 }
 
-# 13. 配置 SSH 公钥
+# 14. 配置 SSH 公钥
 configure_ssh_keys() {
-    record_execution "13" "配置 SSH 公钥"
     print_status "INFO" "配置 SSH 公钥认证"
     
     local ssh_dir="$HOME/.ssh"
@@ -770,10 +818,8 @@ configure_ssh_keys() {
     print_status "SUCCESS" "公钥已添加，共有 $key_count 个有效密钥"
 }
 
-# 14. 显示 SSH 主机密钥指纹
+# 15. 显示 SSH 主机密钥指纹
 show_ssh_fingerprints() {
-    record_execution "14" "显示 SSH 主机密钥指纹"
-    
     echo -e "\n${WHITE}===============================${NC}"
     echo -e "${WHITE}     SSH 主机密钥指纹        ${NC}"
     echo -e "${WHITE}===============================${NC}"
@@ -806,9 +852,8 @@ show_ssh_fingerprints() {
     print_status "SUCCESS" "SSH 主机密钥指纹显示完成"
 }
 
-# 15. 创建自定义用户
+# 4. 创建自定义用户
 create_custom_user() {
-    record_execution "15" "创建自定义用户"
     print_status "PROGRESS" "创建自定义用户"
     
     read -rp "$(echo -e "${WHITE}[?]${NC} 用户名 (小写，首字母为字母或下划线，最大32字符): ")" new_user
@@ -889,7 +934,6 @@ create_custom_user() {
 
 # 16. 启用 journald 持久化日志
 enable_journald_persistence() {
-    record_execution "16" "启用 journald 持久化日志"
     print_status "PROGRESS" "配置 systemd-journald 持久化日志"
 
     local journald_dropin_dir="/etc/systemd/journald.conf.d"
@@ -983,6 +1027,7 @@ show_menu() {
         "设置代理"
         "修改主机名"
         "关闭 SELinux"
+        "创建自定义用户"
         "配置 SSH"
         "安装基础软件包"
         "安装 ZSH 工具链"
@@ -994,7 +1039,6 @@ show_menu() {
         "安装 Docker"
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
-        "创建自定义用户"
         "启用 journald 持久化日志"
     )
     
@@ -1050,24 +1094,24 @@ main() {
         fi
         
         case "$choice" in
-            1) setup_proxy ;;
-            2) change_hostname ;;
-            3) disable_selinux ;;
-            4) configure_ssh ;;
-            5) install_basic_packages ;;
-            6) install_zsh_tools ;;
-            7) sync_system_time ;;
-            8) enable_bbr ;;
-            9) setup_auto_updates ;;
-            10) configure_aide ;;
-            11) security_audit ;;
-            12) install_docker ;;
-            13) configure_ssh_keys ;;
-            14) show_ssh_fingerprints ;;
-            15) create_custom_user ;;
-            16) enable_journald_persistence ;;
-            17) view_logs ;;
-            18) pre_check ;;
+            1) run_menu_item "1" "设置代理" setup_proxy ;;
+            2) run_menu_item "2" "修改主机名" change_hostname ;;
+            3) run_menu_item "3" "关闭 SELinux" disable_selinux ;;
+            4) run_menu_item "4" "创建自定义用户" create_custom_user ;;
+            5) run_menu_item "5" "配置 SSH" configure_ssh ;;
+            6) run_menu_item "6" "安装基础软件包" install_basic_packages ;;
+            7) run_menu_item "7" "安装 ZSH 工具链" install_zsh_tools ;;
+            8) run_menu_item "8" "同步系统时间" sync_system_time ;;
+            9) run_menu_item "9" "启用 TCP BBR" enable_bbr ;;
+            10) run_menu_item "10" "设置自动安全更新" setup_auto_updates ;;
+            11) run_menu_item "11" "配置 AIDE" configure_aide ;;
+            12) run_menu_item "12" "系统安全审计" security_audit ;;
+            13) run_menu_item "13" "安装 Docker" install_docker ;;
+            14) run_menu_item "14" "配置 SSH 公钥" configure_ssh_keys ;;
+            15) run_menu_item "15" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
+            16) run_menu_item "16" "启用 journald 持久化日志" enable_journald_persistence ;;
+            17) run_menu_item "17" "查看执行日志" view_logs ;;
+            18) run_menu_item "18" "系统预检查" pre_check ;;
             0) 
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
