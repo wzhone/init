@@ -766,7 +766,7 @@ pre_check() {
     ensure_openrc
 
     local avail_kb
-    avail_kb=$(df --output=avail / | tail -1 | tr -d ' ' 2>/dev/null)
+    avail_kb=$(df -Pk / 2>/dev/null | awk 'NR==2 {print $4}')
     if [[ -z "$avail_kb" || ! "$avail_kb" =~ ^[0-9]+$ ]]; then
         print_status "WARNING" "无法准确获取磁盘剩余空间"
     else
