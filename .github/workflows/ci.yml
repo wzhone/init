@@ -7,15 +7,60 @@ on:
     branches: ["master"]
 
 jobs:
-  rocky:
-    name: Rocky ${{ matrix.version }} tests
+  lint:
+    name: Script lint
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y shellcheck
+
+      - name: Bash syntax check
+        run: |
+          set -euxo pipefail
+          bash -n rocky.sh
+          bash -n alpine.sh
+
+      - name: ShellCheck static analysis
+        run: |
+          set -euxo pipefail
+          shellcheck -x rocky.sh alpine.sh
+
+  el-smoke:
+    name: ${{ matrix.name }} smoke
+    runs-on: ubuntu-latest
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
-        version: ["8", "9"]
+        include:
+          - name: Rocky Linux 8
+            image: rockylinux/rockylinux:8
+          - name: Rocky Linux 9
+            image: rockylinux/rockylinux:9
+          - name: Rocky Linux 10
+            image: rockylinux/rockylinux:10.1
+          - name: AlmaLinux 8
+            image: almalinux:8
+          - name: AlmaLinux 9
+            image: almalinux:9
+          - name: AlmaLinux 10
+            image: almalinux:10.1
+          - name: Oracle Linux 8
+            image: oraclelinux:8
+          - name: Oracle Linux 9
+            image: oraclelinux:9
+          - name: CentOS Stream 9
+            image: quay.io/centos/centos:stream9
+          - name: CentOS Stream 10
+            image: quay.io/centos/centos:stream10
     container:
-      image: rockylinux/rockylinux:${{ matrix.version }}
+      image: ${{ matrix.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,30 +68,28 @@ jobs:
       - name: Install minimal dependencies
         run: |
           set -euxo pipefail
-          dnf -y install sudo iproute iputils ncurses
+          dnf -y install sudo iproute iputils ncurses procps-ng
 
-      - name: Install ShellCheck
+      - name: Check OS support
         run: |
           set -euxo pipefail
-          # Install EPEL repository for ShellCheck
-          dnf -y install epel-release
-          dnf -y install ShellCheck
+          bash ./rocky.sh check_os
 
-      - name: ShellCheck static analysis
+      - name: Render menu
         run: |
           set -euxo pipefail
-
-          # Run ShellCheck on the main script
-          shellcheck -x rocky.sh
+          TERM=xterm bash ./rocky.sh show_menu > /tmp/rocky-menu
+          grep -q "19. 系统检查" /tmp/rocky-menu
 
       - name: Run pre_check
         run: |
           set -euxo pipefail
           bash ./rocky.sh pre_check
 
-  alpine:
-    name: Alpine ${{ matrix.version }} tests
+  alpine-smoke:
+    name: Alpine ${{ matrix.version }} smoke
     runs-on: ubuntu-latest
+    needs: lint
     strategy:
       fail-fast: false
       matrix:
@@ -60,12 +103,18 @@ jobs:
       - name: Install minimal dependencies
         run: |
           set -euxo pipefail
-          apk add --no-cache bash curl iputils openrc shellcheck
+          apk add --no-cache bash curl iputils openrc
 
-      - name: ShellCheck static analysis
+      - name: Check OS support
         run: |
           set -euxo pipefail
-          shellcheck -x alpine.sh
+          bash ./alpine.sh check_os
+
+      - name: Render menu
+        run: |
+          set -euxo pipefail
+          TERM=xterm bash ./alpine.sh show_menu > /tmp/alpine-menu
+          grep -q "15. 系统检查" /tmp/alpine-menu
 
       - name: Run pre_check
         run: |

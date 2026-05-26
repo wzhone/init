@@ -144,11 +144,35 @@ check_os() {
     fi
     
     source /etc/os-release
-    if [[ "$ID" != "rocky" ]]; then
-        print_status "ERROR" "此脚本仅支持 Rocky Linux，当前系统: $ID"
-        exit 1
-    fi
-    print_status "INFO" "操作系统检查通过: Rocky Linux $VERSION_ID"
+
+    local version_major="${VERSION_ID%%.*}"
+    local pretty_name="${PRETTY_NAME:-$ID $VERSION_ID}"
+    case "$ID" in
+        rocky|almalinux)
+            if [[ ! "$version_major" =~ ^(8|9|10)$ ]]; then
+                print_status "ERROR" "不支持的系统版本: $pretty_name"
+                exit 1
+            fi
+            ;;
+        ol)
+            if [[ ! "$version_major" =~ ^(8|9)$ ]]; then
+                print_status "ERROR" "不支持的系统版本: $pretty_name"
+                exit 1
+            fi
+            ;;
+        centos)
+            if [[ "${PRETTY_NAME:-$NAME}" != *"Stream"* ]] || [[ ! "$version_major" =~ ^(9|10)$ ]]; then
+                print_status "ERROR" "仅支持 CentOS Stream 9/10，不支持当前系统: $pretty_name"
+                exit 1
+            fi
+            ;;
+        *)
+            print_status "ERROR" "此脚本仅支持 Rocky/AlmaLinux/Oracle Linux/CentOS Stream，当前系统: $pretty_name"
+            exit 1
+            ;;
+    esac
+
+    print_status "INFO" "操作系统检查通过: $pretty_name"
 }
 
 # 用户确认函数
