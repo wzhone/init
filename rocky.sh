@@ -673,8 +673,22 @@ configure_aide() {
     check_result $? "AIDE 安装完成" "AIDE 安装失败" || return 1
     
     print_status "PROGRESS" "初始化 AIDE 数据库（可能需要几分钟）"
-    sudo aide --init
-    sudo mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+    if ! sudo aide --init; then
+        print_status "ERROR" "AIDE 数据库初始化失败"
+        return 1
+    fi
+
+    local aide_new_db="/var/lib/aide/aide.db.new.gz"
+    local aide_db="/var/lib/aide/aide.db.gz"
+    if ! sudo test -f "$aide_new_db"; then
+        print_status "ERROR" "未找到 AIDE 初始化生成的数据库: $aide_new_db"
+        return 1
+    fi
+
+    if ! sudo mv "$aide_new_db" "$aide_db"; then
+        print_status "ERROR" "AIDE 数据库启用失败: $aide_db"
+        return 1
+    fi
     
     print_status "SUCCESS" "AIDE 配置完成"
 }
