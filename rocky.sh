@@ -730,7 +730,87 @@ enable_bbr() {
     fi
 }
 
-# 10. 设置自动安全更新
+# 10. 创建 Swap
+configure_swap() {
+    print_status "PROGRESS" "配置 Swap"
+
+    if awk 'NR > 1 {found=1} END {exit found ? 0 : 1}' /proc/swaps 2>/dev/null; then
+        print_status "SUCCESS" "检测到已有 Swap，跳过创建"
+        swapon --show 2>/dev/null || cat /proc/swaps
+        return 0
+    fi
+
+    if ! command -v mkswap &>/dev/null || ! command -v swapon &>/dev/null; then
+        sudo dnf install -y util-linux
+        check_result $? "Swap 工具安装完成" "Swap 工具安装失败" || return 1
+    fi
+
+    local swap_size_gb
+    while true; do
+        read -rp "$(echo -e "${WHITE}[?]${NC} Swap 大小（单位 G，默认 4）: ")" swap_size_gb
+        swap_size_gb=${swap_size_gb:-4}
+        if [[ "$swap_size_gb" =~ ^[1-9][0-9]*$ ]]; then
+            break
+        fi
+        print_status "WARNING" "请输入正整数，例如 2 或 4"
+    done
+
+    local swap_file="/swapfile"
+    if sudo test -e "$swap_file"; then
+        print_status "WARNING" "$swap_file 已存在"
+        if ! prompt_user "是否删除后重新创建"; then
+            print_status "SKIP" "已跳过 Swap 创建"
+            return 77
+        fi
+        sudo swapoff "$swap_file" 2>/dev/null || true
+        if ! sudo rm -f "$swap_file"; then
+            print_status "ERROR" "删除旧 swapfile 失败: $swap_file"
+            return 1
+        fi
+    fi
+
+    print_status "PROGRESS" "创建 ${swap_size_gb}G swapfile"
+    if ! {
+        if command -v fallocate &>/dev/null; then
+            sudo fallocate -l "${swap_size_gb}G" "$swap_file" 2>/dev/null || \
+                sudo dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+        else
+            sudo dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+        fi
+    }; then
+        print_status "ERROR" "swapfile 创建失败"
+        sudo rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! sudo chmod 600 "$swap_file"; then
+        print_status "ERROR" "设置 swapfile 权限失败"
+        sudo rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! sudo mkswap "$swap_file"; then
+        print_status "ERROR" "mkswap 失败"
+        sudo rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! sudo swapon "$swap_file"; then
+        print_status "ERROR" "swapon 失败，当前环境可能不支持 swapfile"
+        sudo rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    local fstab_entry="/swapfile none swap sw 0 0"
+    if ! sudo grep -Eq '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]+sw[[:space:]]+0[[:space:]]+0' /etc/fstab; then
+        echo "$fstab_entry" | sudo tee -a /etc/fstab >/dev/null
+    fi
+
+    print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_gb}G"
+    swapon --show 2>/dev/null || cat /proc/swaps
+}
+
+# 11. 设置自动安全更新
 setup_auto_updates() {
     print_status "PROGRESS" "配置自动安全更新"
     
@@ -749,7 +829,7 @@ setup_auto_updates() {
     fi
 }
 
-# 11. 配置 AIDE
+# 12. 配置 AIDE
 configure_aide() {
     print_status "PROGRESS" "安装文件完整性检测工具"
     
@@ -777,7 +857,7 @@ configure_aide() {
     print_status "SUCCESS" "AIDE 配置完成"
 }
 
-# 12. 系统安全审计
+# 13. 系统安全审计
 security_audit() {
     print_status "PROGRESS" "执行系统安全审计"
     
@@ -793,7 +873,7 @@ security_audit() {
     print_status "SUCCESS" "RKHunter 审计完成，日志: /var/log/rkhunter/rkhunter.log"
 }
 
-# 13. 安装 Docker
+# 14. 安装 Docker
 install_docker() {
     print_status "PROGRESS" "安装 Docker CE"
     
@@ -808,7 +888,7 @@ install_docker() {
     print_status "SUCCESS" "Docker 已安装，请重新登录应用用户组更改"
 }
 
-# 14. 配置 SSH 公钥
+# 15. 配置 SSH 公钥
 configure_ssh_keys() {
     print_status "INFO" "配置 SSH 公钥认证"
     
@@ -851,7 +931,7 @@ configure_ssh_keys() {
     print_status "SUCCESS" "公钥已添加，共有 $key_count 个有效密钥"
 }
 
-# 15. 显示 SSH 主机密钥指纹
+# 16. 显示 SSH 主机密钥指纹
 show_ssh_fingerprints() {
     echo -e "\n${WHITE}===============================${NC}"
     echo -e "${WHITE}     SSH 主机密钥指纹        ${NC}"
@@ -965,7 +1045,7 @@ create_custom_user() {
     print_status "SUCCESS" "自定义用户 $new_user 创建完成"
 }
 
-# 16. 启用 journald 持久化日志
+# 17. 启用 journald 持久化日志
 enable_journald_persistence() {
     print_status "PROGRESS" "配置 systemd-journald 持久化日志"
 
@@ -1066,6 +1146,7 @@ show_menu() {
         "安装 ZSH 工具链"
         "同步系统时间"
         "启用 TCP BBR"
+        "创建 Swap"
         "设置自动安全更新"
         "配置 AIDE"
         "系统安全审计"
@@ -1075,7 +1156,7 @@ show_menu() {
         "启用 journald 持久化日志"
     )
     
-    for i in {1..16}; do
+    for i in {1..17}; do
         if is_executed "$i"; then
             local exec_time
             exec_time=$(get_execution_time "$i" | cut -c 6-16)
@@ -1085,8 +1166,8 @@ show_menu() {
         fi
     done
     
-    echo -e "\n17. 查看执行日志"
-    echo "18. 系统检查"
+    echo -e "\n18. 查看执行日志"
+    echo "19. 系统检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -1122,7 +1203,7 @@ main() {
     
     while true; do
         show_menu
-        if ! read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-18): ")" choice; then
+        if ! read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-19): ")" choice; then
             print_status "WARNING" "输入结束，已退出"
             exit 0
         fi
@@ -1137,27 +1218,28 @@ main() {
             7) run_menu_item "7" "安装 ZSH 工具链" install_zsh_tools ;;
             8) run_menu_item "8" "同步系统时间" sync_system_time ;;
             9) run_menu_item "9" "启用 TCP BBR" enable_bbr ;;
-            10) run_menu_item "10" "设置自动安全更新" setup_auto_updates ;;
-            11) run_menu_item "11" "配置 AIDE" configure_aide ;;
-            12) run_menu_item "12" "系统安全审计" security_audit ;;
-            13) run_menu_item "13" "安装 Docker" install_docker ;;
-            14) run_menu_item "14" "配置 SSH 公钥" configure_ssh_keys ;;
-            15) run_menu_item "15" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
-            16) run_menu_item "16" "启用 journald 持久化日志" enable_journald_persistence ;;
-            17) run_menu_item "17" "查看执行日志" view_logs ;;
-            18) run_menu_item "18" "系统检查" pre_check ;;
+            10) run_menu_item "10" "创建 Swap" configure_swap ;;
+            11) run_menu_item "11" "设置自动安全更新" setup_auto_updates ;;
+            12) run_menu_item "12" "配置 AIDE" configure_aide ;;
+            13) run_menu_item "13" "系统安全审计" security_audit ;;
+            14) run_menu_item "14" "安装 Docker" install_docker ;;
+            15) run_menu_item "15" "配置 SSH 公钥" configure_ssh_keys ;;
+            16) run_menu_item "16" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
+            17) run_menu_item "17" "启用 journald 持久化日志" enable_journald_persistence ;;
+            18) run_menu_item "18" "查看执行日志" view_logs ;;
+            19) run_menu_item "19" "系统检查" pre_check ;;
             0) 
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
                 exit 0
                 ;;
             *)
-                print_status "WARNING" "无效选择，请输入 0-18"
+                print_status "WARNING" "无效选择，请输入 0-19"
                 sleep 1
                 ;;
         esac
         
-        if [[ "$choice" -ge 1 && "$choice" -le 16 ]] || [[ "$choice" -eq 18 ]]; then
+        if [[ "$choice" -ge 1 && "$choice" -le 17 ]] || [[ "$choice" -eq 19 ]]; then
             echo ""
             read -rp "$(echo -e "${WHITE}[?]${NC} 按回车键返回菜单...")"
         fi

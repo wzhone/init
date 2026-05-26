@@ -466,7 +466,94 @@ EOF
     fi
 }
 
-# ========== 8) 设置自动安全更新 ==========
+# ========== 8) 创建 Swap ==========
+configure_swap() {
+    print_status "PROGRESS" "配置 Swap"
+
+    if awk 'NR > 1 {found=1} END {exit found ? 0 : 1}' /proc/swaps 2>/dev/null; then
+        print_status "SUCCESS" "检测到已有 Swap，跳过创建"
+        swapon --show 2>/dev/null || cat /proc/swaps
+        return 0
+    fi
+
+    if ! command -v mkswap >/dev/null 2>&1 || ! command -v swapon >/dev/null 2>&1; then
+        apk add --no-cache util-linux >/dev/null 2>&1 || true
+    fi
+    if ! command -v mkswap >/dev/null 2>&1 || ! command -v swapon >/dev/null 2>&1; then
+        print_status "ERROR" "缺少 mkswap/swapon，无法创建 Swap"
+        return 1
+    fi
+
+    local swap_size_gb
+    while true; do
+        read -rp "[?] Swap 大小（单位 G，默认 4）: " swap_size_gb
+        swap_size_gb=${swap_size_gb:-4}
+        if [[ "$swap_size_gb" =~ ^[1-9][0-9]*$ ]]; then
+            break
+        fi
+        print_status "WARNING" "请输入正整数，例如 2 或 4"
+    done
+
+    local swap_file="/swapfile"
+    if [[ -e "$swap_file" ]]; then
+        print_status "WARNING" "$swap_file 已存在"
+        read -r -p "[?] 是否删除后重新创建？[y/N]: " ans
+        case "$ans" in
+            y|Y) ;;
+            *)
+                print_status "WARNING" "已跳过 Swap 创建"
+                return 77
+                ;;
+        esac
+        swapoff "$swap_file" 2>/dev/null || true
+        if ! rm -f "$swap_file"; then
+            print_status "ERROR" "删除旧 swapfile 失败: $swap_file"
+            return 1
+        fi
+    fi
+
+    print_status "PROGRESS" "创建 ${swap_size_gb}G swapfile"
+    if ! {
+        if command -v fallocate >/dev/null 2>&1; then
+            fallocate -l "${swap_size_gb}G" "$swap_file" 2>/dev/null || \
+                dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+        else
+            dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+        fi
+    }; then
+        print_status "ERROR" "swapfile 创建失败"
+        rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! chmod 600 "$swap_file"; then
+        print_status "ERROR" "设置 swapfile 权限失败"
+        rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! mkswap "$swap_file"; then
+        print_status "ERROR" "mkswap 失败"
+        rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    if ! swapon "$swap_file"; then
+        print_status "ERROR" "swapon 失败，当前环境可能不支持 swapfile"
+        rm -f "$swap_file" 2>/dev/null || true
+        return 1
+    fi
+
+    local fstab_entry="/swapfile none swap sw 0 0"
+    if ! grep -Eq '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]+sw[[:space:]]+0[[:space:]]+0' /etc/fstab; then
+        echo "$fstab_entry" >> /etc/fstab
+    fi
+
+    print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_gb}G"
+    swapon --show 2>/dev/null || cat /proc/swaps
+}
+
+# ========== 9) 设置自动安全更新 ==========
 setup_auto_updates() {
     print_status "PROGRESS" "创建 /etc/periodic/daily/apk-auto-upgrade 并启用 crond"
     local update_script_path="/etc/periodic/daily/apk-auto-upgrade"
@@ -491,7 +578,7 @@ EOF
     print_status "SUCCESS" "已启用每日自动升级（crond + /etc/periodic/daily）"
 }
 
-# ========== 9) 安装 Docker==========
+# ========== 10) 安装 Docker==========
 install_docker() {
     print_status "PROGRESS" "安装并启用 Docker（OpenRC）"
     apk add --no-cache docker >/dev/null 2>&1
@@ -510,7 +597,7 @@ install_docker() {
     fi
 }
 
-# ========== 10) 配置 SSH 公钥 ==========
+# ========== 11) 配置 SSH 公钥 ==========
 configure_ssh_keys() {
     local TARGET_USER
     read -rp "[?] 目标用户（默认当前用户 $SUDO_USER/$USER）: " TARGET_USER
@@ -531,7 +618,7 @@ configure_ssh_keys() {
     print_status "SUCCESS" "已写入 $HOME_DIR/.ssh/authorized_keys"
 }
 
-# ========== 11) 显示 SSH 主机密钥指纹 ==========
+# ========== 12) 显示 SSH 主机密钥指纹 ==========
 show_ssh_fingerprints() {
     print_status "INFO" "ECDSA:"
     ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub 2>/dev/null || true
@@ -584,7 +671,7 @@ create_custom_user() {
     print_status "SUCCESS" "已将 $NEW_USER 加入 wheel 组并启用 sudo"
 }
 
-# ========== 12) 设置系统时区 ==========
+# ========== 13) 设置系统时区 ==========
 configure_timezone() {
     local zoneinfo_base="/usr/share/zoneinfo"
     local current_tz=""
@@ -663,7 +750,7 @@ configure_timezone() {
     return 1
 }
 
-# ========== 13) 查看执行日志 ==========
+# ========== 14) 查看执行日志 ==========
 view_logs() {
     if [[ -s "$LOG_FILE" ]]; then
         print_status "INFO" "日志文件: $LOG_FILE"
@@ -673,7 +760,7 @@ view_logs() {
     fi
 }
 
-# ========== 14) 系统检查 ==========
+# ========== 15) 系统检查 ==========
 pre_check() {
     check_os
     ensure_openrc
@@ -753,6 +840,7 @@ show_menu() {
         "安装基础软件包"
         "同步系统时间"
         "启用 TCP BBR"
+        "创建 Swap"
         "设置自动安全更新"
         "安装 Docker"
         "配置 SSH 公钥"
@@ -770,8 +858,8 @@ show_menu() {
         fi
     done
 
-    echo -e "\n13. 查看执行日志"
-    echo "14. 系统检查"
+    echo -e "\n14. 查看执行日志"
+    echo "15. 系统检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -785,7 +873,7 @@ main() {
 
     while true; do
         show_menu
-        if ! read -rp "请输入序号 (0-14): " choice; then
+        if ! read -rp "请输入序号 (0-15): " choice; then
             print_status "WARNING" "输入结束，已退出"
             exit 0
         fi
@@ -797,25 +885,26 @@ main() {
             5) run_menu_item "5" "安装基础软件包" install_basic_packages ;;
             6) run_menu_item "6" "同步系统时间" sync_system_time ;;
             7) run_menu_item "7" "启用 TCP BBR" enable_bbr ;;
-            8) run_menu_item "8" "设置自动安全更新" setup_auto_updates ;;
-            9) run_menu_item "9" "安装 Docker" install_docker ;;
-            10) run_menu_item "10" "配置 SSH 公钥" configure_ssh_keys ;;
-            11) run_menu_item "11" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
-            12) run_menu_item "12" "设置系统时区" configure_timezone ;;
-            13) run_menu_item "13" "查看执行日志" view_logs ;;
-            14) run_menu_item "14" "系统检查" pre_check ;;
+            8) run_menu_item "8" "创建 Swap" configure_swap ;;
+            9) run_menu_item "9" "设置自动安全更新" setup_auto_updates ;;
+            10) run_menu_item "10" "安装 Docker" install_docker ;;
+            11) run_menu_item "11" "配置 SSH 公钥" configure_ssh_keys ;;
+            12) run_menu_item "12" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
+            13) run_menu_item "13" "设置系统时区" configure_timezone ;;
+            14) run_menu_item "14" "查看执行日志" view_logs ;;
+            15) run_menu_item "15" "系统检查" pre_check ;;
             0)
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
                 exit 0
                 ;;
             *)
-                print_status "WARNING" "无效选择，请输入 0-14"
+                print_status "WARNING" "无效选择，请输入 0-15"
                 sleep 1
                 ;;
         esac
 
-        if [[ "$choice" =~ ^([1-9]|1[0-4])$ ]]; then
+        if [[ "$choice" =~ ^([1-9]|1[0-5])$ ]]; then
             echo ""
             if ! read -rp "[?] 按回车键返回菜单..."; then
                 print_status "WARNING" "输入结束，已退出"
