@@ -102,6 +102,24 @@ get_execution_time() {
     fi
 }
 
+run_menu_item() {
+    local step="$1"
+    local name="$2"
+    local status
+    shift 2
+
+    "$@"
+    status=$?
+    if [[ $status -eq 0 ]]; then
+        record_execution "$step" "$name"
+        return 0
+    fi
+    if [[ $status -eq 77 ]]; then
+        return 0
+    fi
+    return "$status"
+}
+
 require_root() {
     if [[ $EUID -ne 0 ]]; then
         print_status "ERROR" "需要 root 权限运行"
@@ -224,12 +242,11 @@ EOF
 
 # ========== 1) 修改主机名 ==========
 change_hostname() {
-    record_execution "1" "修改主机名"
     print_status "PROGRESS" "当前主机名: $(hostname)"
     read -rp "[?] 输入新主机名（留空取消）: " NEW_HOSTNAME
     if [[ -z "$NEW_HOSTNAME" ]]; then
         print_status "WARNING" "未输入，已跳过"
-        return 0
+        return 77
     fi
 
     echo "$NEW_HOSTNAME" > /etc/hostname
@@ -240,10 +257,8 @@ change_hostname() {
     check_result $? "主机名已更新为 $NEW_HOSTNAME" "主机名更新失败"
 }
 
-# ========== 2) 配置 SSH==========
+# ========== 3) 配置 SSH==========
 configure_ssh() {
-    record_execution "2" "配置 SSH"
-
     local SSHD_CFG="/etc/ssh/sshd_config"
     local SSHD_BAK
     SSHD_BAK="${SSHD_CFG}.bak.$(date +%Y%m%d%H%M%S)"
@@ -293,7 +308,7 @@ configure_ssh() {
     read -r -p "[?] 输入 YES 才继续执行 SSH 配置: " ans
     if [[ "$ans" != "YES" ]]; then
         print_status "WARNING" "已取消 SSH 配置"
-        return 0
+        return 77
     fi
 
     cp -a "$SSHD_CFG" "$SSHD_BAK" 2>/dev/null || true
@@ -369,9 +384,8 @@ configure_ssh() {
     print_status "INFO" "如需更改SSH端口或其它选项，编辑 $SSHD_CFG 后执行 rc-service sshd restart"
 }
 
-# ========== 3) 启用 edge 仓库 ==========
+# ========== 4) 启用 edge 仓库 ==========
 setup_edge_repo() {
-    record_execution "3" "启用 edge 仓库"
     local edge_testing_repo="@edge_testing https://dl-cdn.alpinelinux.org/alpine/edge/testing"
     if ! ensure_apk_repo "$edge_testing_repo"; then
         return 1
@@ -385,9 +399,8 @@ setup_edge_repo() {
     fi
 }
 
-# ========== 4) 安装基础软件包 ==========
+# ========== 5) 安装基础软件包 ==========
 install_basic_packages() {
-    record_execution "4" "安装基础软件包"
     print_status "PROGRESS" "更新索引并升级系统"
     apk update && apk upgrade --available
 
@@ -407,9 +420,8 @@ install_basic_packages() {
     fi
 }
 
-# ========== 5) 同步系统时间 ==========
+# ========== 6) 同步系统时间 ==========
 sync_system_time() {
-    record_execution "5" "同步系统时间"
     print_status "PROGRESS" "配置 Chrony（chronyd）为 NTP 客户端"
     apk add --no-cache chrony chrony-openrc >/dev/null 2>&1 || true
     if [[ -f /etc/chrony/chrony.conf ]]; then
@@ -421,9 +433,8 @@ sync_system_time() {
     check_result $? "Chrony 已启动" "Chrony 启动失败"
 }
 
-# ========== 6) 启用 TCP BBR ==========
+# ========== 7) 启用 TCP BBR ==========
 enable_bbr() {
-    record_execution "6" "启用 TCP BBR"
     print_status "PROGRESS" "尝试启用 TCP BBR..."
 
     local bbr_conf_file="/etc/sysctl.d/99-bbr.conf"
@@ -446,9 +457,8 @@ EOF
     fi
 }
 
-# ========== 7) 设置自动安全更新 ==========
+# ========== 8) 设置自动安全更新 ==========
 setup_auto_updates() {
-    record_execution "7" "设置自动安全更新"
     print_status "PROGRESS" "创建 /etc/periodic/daily/apk-auto-upgrade 并启用 crond"
     local update_script_path="/etc/periodic/daily/apk-auto-upgrade"
     local expected_content
@@ -464,7 +474,7 @@ apk -U update
 apk upgrade --available
 EOF
         chmod +x "$update_script_path"
-        check_result $? "自动更新脚本已创建" "自动更新脚本创建失败"
+        check_result $? "自动更新脚本已创建" "自动更新脚本创建失败" || return 1
     fi
 
     rc-update add crond >/dev/null 2>&1 || true
@@ -472,9 +482,8 @@ EOF
     print_status "SUCCESS" "已启用每日自动升级（crond + /etc/periodic/daily）"
 }
 
-# ========== 8) 安装 Docker==========
+# ========== 9) 安装 Docker==========
 install_docker() {
-    record_execution "8" "安装 Docker"
     print_status "PROGRESS" "安装并启用 Docker（OpenRC）"
     apk add --no-cache docker >/dev/null 2>&1
     # 确保 cgroups 服务启用（Alpine 3.19+ 多为 unified）
@@ -492,9 +501,8 @@ install_docker() {
     fi
 }
 
-# ========== 9) 配置 SSH 公钥 ==========
+# ========== 10) 配置 SSH 公钥 ==========
 configure_ssh_keys() {
-    record_execution "9" "配置 SSH 公钥"
     local TARGET_USER
     read -rp "[?] 目标用户（默认当前用户 $SUDO_USER/$USER）: " TARGET_USER
     [[ -z "$TARGET_USER" ]] && TARGET_USER="${SUDO_USER:-$USER}"
@@ -514,9 +522,8 @@ configure_ssh_keys() {
     print_status "SUCCESS" "已写入 $HOME_DIR/.ssh/authorized_keys"
 }
 
-# ========== 10) 显示 SSH 主机密钥指纹 ==========
+# ========== 11) 显示 SSH 主机密钥指纹 ==========
 show_ssh_fingerprints() {
-    record_execution "10" "显示 SSH 主机密钥指纹"
     print_status "INFO" "ECDSA:"
     ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub 2>/dev/null || true
     print_status "INFO" "ED25519:"
@@ -525,14 +532,13 @@ show_ssh_fingerprints() {
     ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || true
 }
 
-# ========== 11) 创建自定义用户 ==========
+# ========== 2) 创建自定义用户 ==========
 create_custom_user() {
-    record_execution "11" "创建自定义用户"
     local NEW_USER
     read -rp "[?] 输入新用户名: " NEW_USER
     if [[ -z "$NEW_USER" ]]; then
         print_status "WARNING" "未输入用户名，已跳过"
-        return 0
+        return 77
     fi
     if id "$NEW_USER" >/dev/null 2>&1; then
         print_status "ERROR" "用户 $NEW_USER 已存在"
@@ -571,7 +577,6 @@ create_custom_user() {
 
 # ========== 12) 设置系统时区 ==========
 configure_timezone() {
-    record_execution "12" "设置系统时区"
     local zoneinfo_base="/usr/share/zoneinfo"
     local current_tz=""
     local tz_input=""
@@ -651,7 +656,6 @@ configure_timezone() {
 
 # ========== 13) 查看执行日志 ==========
 view_logs() {
-    record_execution "13" "查看执行日志"
     if [[ -s "$LOG_FILE" ]]; then
         print_status "INFO" "日志文件: $LOG_FILE"
         tail -n 200 "$LOG_FILE"
@@ -662,7 +666,6 @@ view_logs() {
 
 # ========== 14) 系统预检查 ==========
 pre_check() {
-    record_execution "14" "系统预检查"
     check_os
     ensure_openrc
 
@@ -696,6 +699,7 @@ show_menu() {
 
     local menu_items=(
         "修改主机名"
+        "创建自定义用户（含 sudo/wheel）"
         "配置 SSH"
         "启用 edge 仓库"
         "安装基础软件包"
@@ -705,7 +709,6 @@ show_menu() {
         "安装 Docker"
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
-        "创建自定义用户（含 sudo/wheel）"
         "设置系统时区"
     )
 
@@ -739,20 +742,20 @@ main() {
             exit 0
         fi
         case "$choice" in
-            1) change_hostname ;;
-            2) configure_ssh ;;
-            3) setup_edge_repo ;;
-            4) install_basic_packages ;;
-            5) sync_system_time ;;
-            6) enable_bbr ;;
-            7) setup_auto_updates ;;
-            8) install_docker ;;
-            9) configure_ssh_keys ;;
-            10) show_ssh_fingerprints ;;
-            11) create_custom_user ;;
-            12) configure_timezone ;;
-            13) view_logs ;;
-            14) pre_check ;;
+            1) run_menu_item "1" "修改主机名" change_hostname ;;
+            2) run_menu_item "2" "创建自定义用户" create_custom_user ;;
+            3) run_menu_item "3" "配置 SSH" configure_ssh ;;
+            4) run_menu_item "4" "启用 edge 仓库" setup_edge_repo ;;
+            5) run_menu_item "5" "安装基础软件包" install_basic_packages ;;
+            6) run_menu_item "6" "同步系统时间" sync_system_time ;;
+            7) run_menu_item "7" "启用 TCP BBR" enable_bbr ;;
+            8) run_menu_item "8" "设置自动安全更新" setup_auto_updates ;;
+            9) run_menu_item "9" "安装 Docker" install_docker ;;
+            10) run_menu_item "10" "配置 SSH 公钥" configure_ssh_keys ;;
+            11) run_menu_item "11" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
+            12) run_menu_item "12" "设置系统时区" configure_timezone ;;
+            13) run_menu_item "13" "查看执行日志" view_logs ;;
+            14) run_menu_item "14" "系统预检查" pre_check ;;
             0)
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
