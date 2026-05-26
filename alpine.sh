@@ -673,19 +673,11 @@ view_logs() {
     fi
 }
 
-# ========== 14) 系统预检查 ==========
+# ========== 14) 系统检查 ==========
 pre_check() {
     check_os
     ensure_openrc
 
-    print_status "PROGRESS" "检查网络连通性（ping dl-cdn.alpinelinux.org）"
-    if ping -c 1 -W 2 dl-cdn.alpinelinux.org >/dev/null 2>&1; then
-        print_status "SUCCESS" "网络连通正常"
-    else
-        print_status "WARNING" "无法连通 dl-cdn.alpinelinux.org，后续安装可能失败"
-    fi
-
-    print_status "PROGRESS" "检查磁盘剩余空间"
     local avail_kb
     avail_kb=$(df --output=avail / | tail -1 | tr -d ' ' 2>/dev/null)
     if [[ -z "$avail_kb" || ! "$avail_kb" =~ ^[0-9]+$ ]]; then
@@ -697,6 +689,53 @@ pre_check() {
         else
             print_status "SUCCESS" "硬盘剩余空间约 ${avail_gb}GB"
         fi
+    fi
+
+    local cpu_model
+    local cpu_cores
+    local mem_total_mb
+    local mem_available_mb
+    local swap_total_mb
+    cpu_model=$(awk -F: '/model name|Processor/{gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)
+    cpu_cores=$(nproc 2>/dev/null || echo "未知")
+    mem_total_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    mem_available_mb=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    swap_total_mb=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    print_status "INFO" "CPU: ${cpu_model:-未知} (${cpu_cores} 核)"
+    print_status "INFO" "内存: ${mem_available_mb:-未知}MB 可用 / ${mem_total_mb:-未知}MB 总计"
+    print_status "INFO" "Swap: ${swap_total_mb:-未知}MB"
+
+    local service
+    for service in sshd chronyd docker crond; do
+        if rc-service "$service" status >/dev/null 2>&1; then
+            print_status "SUCCESS" "$service: started"
+        elif [[ -x "/etc/init.d/$service" ]]; then
+            print_status "WARNING" "$service: stopped"
+        else
+            print_status "INFO" "$service: 未安装或未注册"
+        fi
+    done
+
+    local current_congestion_control
+    current_congestion_control=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    if [[ "$current_congestion_control" == "bbr" ]]; then
+        print_status "SUCCESS" "BBR: 已生效"
+    else
+        print_status "INFO" "BBR: 当前拥塞控制为 ${current_congestion_control:-未知}"
+    fi
+
+    if [[ -f /etc/periodic/daily/apk-auto-upgrade ]]; then
+        print_status "SUCCESS" "自动更新: 已配置 /etc/periodic/daily/apk-auto-upgrade"
+    else
+        print_status "INFO" "自动更新: 未检测到 daily apk-auto-upgrade"
+    fi
+
+    if [[ -f /etc/timezone ]]; then
+        print_status "INFO" "时区: $(cat /etc/timezone 2>/dev/null)"
+    elif [[ -e /etc/localtime ]]; then
+        print_status "INFO" "时区: 已配置 /etc/localtime"
+    else
+        print_status "INFO" "时区: 未检测到配置"
     fi
 }
 
@@ -732,7 +771,7 @@ show_menu() {
     done
 
     echo -e "\n13. 查看执行日志"
-    echo "14. 系统预检查"
+    echo "14. 系统检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -764,7 +803,7 @@ main() {
             11) run_menu_item "11" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
             12) run_menu_item "12" "设置系统时区" configure_timezone ;;
             13) run_menu_item "13" "查看执行日志" view_logs ;;
-            14) run_menu_item "14" "系统预检查" pre_check ;;
+            14) run_menu_item "14" "系统检查" pre_check ;;
             0)
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"

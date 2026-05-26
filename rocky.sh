@@ -193,50 +193,77 @@ configure_firewall_port() {
     fi
 }
 
-# 预检查函数
+# 系统检查函数
 pre_check() {
-    print_status "INFO" "执行系统预检查"
-    
-    # 检查 sudo 权限
-    print_status "PROGRESS" "检查 sudo 权限"
+    print_status "INFO" "执行系统检查"
+
     if sudo -n true 2>/dev/null; then
         print_status "SUCCESS" "sudo 权限检查通过"
+    elif sudo true 2>/dev/null; then
+        print_status "SUCCESS" "sudo 权限验证成功"
     else
-        if sudo true 2>/dev/null; then
-            print_status "SUCCESS" "sudo 权限验证成功"
-        else
-            print_status "WARNING" "当前用户没有 sudo 权限，部分功能可能无法使用"
-        fi
+        print_status "WARNING" "当前用户没有 sudo 权限，部分功能可能无法使用"
     fi
-    
-    # 检查网络连接
-    print_status "PROGRESS" "检查网络连接"
-    if ping -c 1 -W 5 8.8.8.8 &>/dev/null || ping -c 1 -W 5 223.5.5.5 &>/dev/null; then
-        print_status "SUCCESS" "网络连接正常"
-    else
-        print_status "WARNING" "网络连接异常，可能影响软件包安装"
-    fi
-    
-    # 检查硬盘空间
-    print_status "PROGRESS" "检查硬盘剩余空间"
-    # df --output=avail 默认以 1K-blocks（KB）输出
+
     local avail_kb
     avail_kb=$(df --output=avail / | tail -1 | tr -d ' ' 2>/dev/null)
     if [[ -z "$avail_kb" || ! "$avail_kb" =~ ^[0-9]+$ ]]; then
         print_status "WARNING" "无法准确获取磁盘剩余空间"
     else
-        # 1 GB = 1048576 KB
         local avail_gb=$((avail_kb / 1024 / 1024))
         if [[ $avail_kb -lt 1048576 ]]; then
-            # 小于 1GB
             print_status "WARNING" "硬盘剩余空间不足 1GB (当前: ${avail_gb}GB)，可能影响软件安装"
         else
-            print_status "SUCCESS" "硬盘剩余空间: ${avail_gb}GB (充足)"
+            print_status "SUCCESS" "硬盘剩余空间: ${avail_gb}GB"
         fi
     fi
-    
-    echo ""
-    read -rp "$(echo -e "${WHITE}[?]${NC} 按回车键继续...")"
+    local cpu_model
+    local cpu_cores
+    local mem_total_mb
+    local mem_available_mb
+    local swap_total_mb
+    cpu_model=$(awk -F: '/model name/{gsub(/^[ \t]+/, "", $2); print $2; exit}' /proc/cpuinfo 2>/dev/null)
+    cpu_cores=$(nproc 2>/dev/null || echo "未知")
+    mem_total_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    mem_available_mb=$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    swap_total_mb=$(awk '/SwapTotal/{print int($2/1024)}' /proc/meminfo 2>/dev/null)
+    print_status "INFO" "CPU: ${cpu_model:-未知} (${cpu_cores} 核)"
+    print_status "INFO" "内存: ${mem_available_mb:-未知}MB 可用 / ${mem_total_mb:-未知}MB 总计"
+    print_status "INFO" "Swap: ${swap_total_mb:-未知}MB"
+
+    local service
+    for service in sshd chronyd docker dnf-automatic.timer systemd-journald; do
+        if systemctl list-unit-files "$service" --no-legend 2>/dev/null | grep -q . || systemctl status "$service" &>/dev/null; then
+            if systemctl is-active --quiet "$service"; then
+                print_status "SUCCESS" "$service: active"
+            else
+                print_status "WARNING" "$service: inactive"
+            fi
+        else
+            print_status "INFO" "$service: 未安装或未注册"
+        fi
+    done
+
+    local current_congestion_control
+    current_congestion_control=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    if [[ "$current_congestion_control" == "bbr" ]]; then
+        print_status "SUCCESS" "BBR: 已生效"
+    else
+        print_status "INFO" "BBR: 当前拥塞控制为 ${current_congestion_control:-未知}"
+    fi
+
+    if systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep -Eq '^[[:space:]]*Storage[[:space:]]*=[[:space:]]*persistent[[:space:]]*$' && \
+       sudo find /var/log/journal -maxdepth 2 -type f -name '*.journal*' -print -quit 2>/dev/null | grep -q .; then
+        print_status "SUCCESS" "journald: 已持久化写入 /var/log/journal"
+    else
+        print_status "INFO" "journald: 未确认持久化写入"
+    fi
+
+    if [[ -f /var/lib/aide/aide.db.gz ]]; then
+        print_status "SUCCESS" "AIDE: 数据库已存在"
+    else
+        print_status "INFO" "AIDE: 未检测到数据库"
+    fi
 }
 
 # 1. 设置代理
@@ -1059,7 +1086,7 @@ show_menu() {
     done
     
     echo -e "\n17. 查看执行日志"
-    echo "18. 系统预检查"
+    echo "18. 系统检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -1088,8 +1115,9 @@ main() {
     
     # 首次运行时自动执行预检查
     if [[ ! -f "$CONFIG_FILE" ]] || [[ ! -s "$CONFIG_FILE" ]]; then
-        print_status "INFO" "首次运行，执行系统预检查"
         pre_check
+        echo ""
+        read -rp "$(echo -e "${WHITE}[?]${NC} 按回车键继续...")"
     fi
     
     while true; do
@@ -1117,7 +1145,7 @@ main() {
             15) run_menu_item "15" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
             16) run_menu_item "16" "启用 journald 持久化日志" enable_journald_persistence ;;
             17) run_menu_item "17" "查看执行日志" view_logs ;;
-            18) run_menu_item "18" "系统预检查" pre_check ;;
+            18) run_menu_item "18" "系统检查" pre_check ;;
             0) 
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
