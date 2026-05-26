@@ -688,12 +688,18 @@ enable_bbr() {
         fi
     done
     
-    sudo sysctl -p &>/dev/null
-    
-    if lsmod | grep -q "tcp_bbr"; then
+    if ! sudo sysctl -p &>/dev/null; then
+        print_status "ERROR" "BBR 配置加载失败"
+        return 1
+    fi
+
+    local current_congestion_control
+    current_congestion_control=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)
+    if [[ "$current_congestion_control" == "bbr" ]]; then
         print_status "SUCCESS" "BBR 已启用"
     else
-        print_status "WARNING" "BBR 启用失败，请检查内核版本"
+        print_status "WARNING" "BBR 未生效，当前拥塞控制: ${current_congestion_control:-未知}"
+        return 1
     fi
 }
 
