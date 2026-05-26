@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install ShellCheck
         run: |
@@ -63,7 +63,7 @@ jobs:
       image: ${{ matrix.image }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install minimal dependencies
         run: |
@@ -98,7 +98,7 @@ jobs:
       image: alpine:${{ matrix.version }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install minimal dependencies
         run: |
