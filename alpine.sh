@@ -914,4 +914,8 @@ main() {
     done
 }
 
-main
+if [[ $# -gt 0 ]]; then
+    "$@"
+else
+    main
+fi
