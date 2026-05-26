@@ -472,26 +472,9 @@ EOF
     print_status "SUCCESS" "已启用每日自动升级（crond + /etc/periodic/daily）"
 }
 
-# ========== 8) 系统安全审计 ==========
-security_audit() {
-    record_execution "8" "系统安全审计"
-    local lynis_pkg="lynis"
-    if grep -qE '^[[:space:]]*@edge_testing[[:space:]]+' /etc/apk/repositories 2>/dev/null; then
-        lynis_pkg="lynis@edge_testing"
-    fi
-
-    print_status "PROGRESS" "安装 Lynis 并执行审计"
-    if apk add --no-cache "$lynis_pkg" >/dev/null 2>&1; then
-        lynis audit system || true
-        print_status "SUCCESS" "Lynis 审计已运行（输出见终端或日志）"
-    else
-        print_status "WARNING" "Lynis 安装失败。若已启用 tagged 仓库，请使用：apk add --no-cache lynis@edge_testing"
-    fi
-}
-
-# ========== 9) 安装 Docker==========
+# ========== 8) 安装 Docker==========
 install_docker() {
-    record_execution "9" "安装 Docker"
+    record_execution "8" "安装 Docker"
     print_status "PROGRESS" "安装并启用 Docker（OpenRC）"
     apk add --no-cache docker >/dev/null 2>&1
     # 确保 cgroups 服务启用（Alpine 3.19+ 多为 unified）
@@ -509,9 +492,9 @@ install_docker() {
     fi
 }
 
-# ========== 10) 配置 SSH 公钥 ==========
+# ========== 9) 配置 SSH 公钥 ==========
 configure_ssh_keys() {
-    record_execution "10" "配置 SSH 公钥"
+    record_execution "9" "配置 SSH 公钥"
     local TARGET_USER
     read -rp "[?] 目标用户（默认当前用户 $SUDO_USER/$USER）: " TARGET_USER
     [[ -z "$TARGET_USER" ]] && TARGET_USER="${SUDO_USER:-$USER}"
@@ -531,9 +514,9 @@ configure_ssh_keys() {
     print_status "SUCCESS" "已写入 $HOME_DIR/.ssh/authorized_keys"
 }
 
-# ========== 11) 显示 SSH 主机密钥指纹 ==========
+# ========== 10) 显示 SSH 主机密钥指纹 ==========
 show_ssh_fingerprints() {
-    record_execution "11" "显示 SSH 主机密钥指纹"
+    record_execution "10" "显示 SSH 主机密钥指纹"
     print_status "INFO" "ECDSA:"
     ssh-keygen -lf /etc/ssh/ssh_host_ecdsa_key.pub 2>/dev/null || true
     print_status "INFO" "ED25519:"
@@ -542,9 +525,9 @@ show_ssh_fingerprints() {
     ssh-keygen -lf /etc/ssh/ssh_host_rsa_key.pub 2>/dev/null || true
 }
 
-# ========== 12) 创建自定义用户 ==========
+# ========== 11) 创建自定义用户 ==========
 create_custom_user() {
-    record_execution "12" "创建自定义用户"
+    record_execution "11" "创建自定义用户"
     local NEW_USER
     read -rp "[?] 输入新用户名: " NEW_USER
     if [[ -z "$NEW_USER" ]]; then
@@ -586,9 +569,9 @@ create_custom_user() {
     print_status "SUCCESS" "已将 $NEW_USER 加入 wheel 组并启用 sudo"
 }
 
-# ========== 13) 设置系统时区 ==========
+# ========== 12) 设置系统时区 ==========
 configure_timezone() {
-    record_execution "13" "设置系统时区"
+    record_execution "12" "设置系统时区"
     local zoneinfo_base="/usr/share/zoneinfo"
     local current_tz=""
     local tz_input=""
@@ -666,9 +649,9 @@ configure_timezone() {
     return 1
 }
 
-# ========== 14) 查看执行日志 ==========
+# ========== 13) 查看执行日志 ==========
 view_logs() {
-    record_execution "14" "查看执行日志"
+    record_execution "13" "查看执行日志"
     if [[ -s "$LOG_FILE" ]]; then
         print_status "INFO" "日志文件: $LOG_FILE"
         tail -n 200 "$LOG_FILE"
@@ -677,9 +660,9 @@ view_logs() {
     fi
 }
 
-# ========== 15) 系统预检查 ==========
+# ========== 14) 系统预检查 ==========
 pre_check() {
-    record_execution "15" "系统预检查"
+    record_execution "14" "系统预检查"
     check_os
     ensure_openrc
 
@@ -719,7 +702,6 @@ show_menu() {
         "同步系统时间"
         "启用 TCP BBR"
         "设置自动安全更新"
-        "系统安全审计（Lynis）"
         "安装 Docker"
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
@@ -737,8 +719,8 @@ show_menu() {
         fi
     done
 
-    echo -e "\n14. 查看执行日志"
-    echo "15. 系统预检查"
+    echo -e "\n13. 查看执行日志"
+    echo "14. 系统预检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -752,7 +734,7 @@ main() {
 
     while true; do
         show_menu
-        if ! read -rp "请输入序号 (0-15): " choice; then
+        if ! read -rp "请输入序号 (0-14): " choice; then
             print_status "WARNING" "输入结束，已退出"
             exit 0
         fi
@@ -764,26 +746,25 @@ main() {
             5) sync_system_time ;;
             6) enable_bbr ;;
             7) setup_auto_updates ;;
-            8) security_audit ;;
-            9) install_docker ;;
-            10) configure_ssh_keys ;;
-            11) show_ssh_fingerprints ;;
-            12) create_custom_user ;;
-            13) configure_timezone ;;
-            14) view_logs ;;
-            15) pre_check ;;
+            8) install_docker ;;
+            9) configure_ssh_keys ;;
+            10) show_ssh_fingerprints ;;
+            11) create_custom_user ;;
+            12) configure_timezone ;;
+            13) view_logs ;;
+            14) pre_check ;;
             0)
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
                 exit 0
                 ;;
             *)
-                print_status "WARNING" "无效选择，请输入 0-15"
+                print_status "WARNING" "无效选择，请输入 0-14"
                 sleep 1
                 ;;
         esac
 
-        if [[ "$choice" =~ ^([1-9]|1[0-5])$ ]]; then
+        if [[ "$choice" =~ ^([1-9]|1[0-4])$ ]]; then
             echo ""
             if ! read -rp "[?] 按回车键返回菜单..."; then
                 print_status "WARNING" "输入结束，已退出"
