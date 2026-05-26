@@ -873,6 +873,91 @@ create_custom_user() {
     print_status "SUCCESS" "自定义用户 $new_user 创建完成"
 }
 
+# 16. 启用 journald 持久化日志
+enable_journald_persistence() {
+    record_execution "16" "启用 journald 持久化日志"
+    print_status "PROGRESS" "配置 systemd-journald 持久化日志"
+
+    local journald_dropin_dir="/etc/systemd/journald.conf.d"
+    local journald_persistent_conf="$journald_dropin_dir/10-persistent.conf"
+
+    if ! sudo mkdir -p "$journald_dropin_dir"; then
+        print_status "ERROR" "创建 journald 配置目录失败: $journald_dropin_dir"
+        return 1
+    fi
+
+    if ! sudo tee "$journald_persistent_conf" >/dev/null <<'EOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=2G
+SystemKeepFree=1G
+MaxRetentionSec=30day
+EOF
+    then
+        print_status "ERROR" "写入 journald 持久化配置失败: $journald_persistent_conf"
+        return 1
+    fi
+    print_status "SUCCESS" "journald 持久化配置已写入: $journald_persistent_conf"
+
+    print_status "PROGRESS" "重启 systemd-journald 并刷新当前日志"
+    if ! sudo systemctl restart systemd-journald; then
+        print_status "ERROR" "systemd-journald 重启失败"
+        return 1
+    fi
+
+    if ! sudo journalctl --flush; then
+        print_status "ERROR" "journalctl --flush 执行失败"
+        return 1
+    fi
+
+    print_status "PROGRESS" "验证 journald 配置是否已被 systemd 读取"
+    local loaded_journald_config
+    if ! loaded_journald_config=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null); then
+        print_status "ERROR" "无法通过 systemd-analyze 读取 journald 合并配置"
+        return 1
+    fi
+
+    local required_journald_settings=(
+        "Storage=persistent"
+        "SystemMaxUse=2G"
+        "SystemKeepFree=1G"
+        "MaxRetentionSec=30day"
+    )
+    local missing_setting=0
+    local setting
+    for setting in "${required_journald_settings[@]}"; do
+        if grep -Eq "^[[:space:]]*${setting%%=*}[[:space:]]*=[[:space:]]*${setting#*=}[[:space:]]*$" <<< "$loaded_journald_config"; then
+            print_status "SUCCESS" "配置已读取: $setting"
+        else
+            print_status "ERROR" "配置未读取: $setting"
+            missing_setting=1
+        fi
+    done
+    if [[ $missing_setting -ne 0 ]]; then
+        return 1
+    fi
+
+    print_status "PROGRESS" "验证 /var/log/journal 下是否已有持久化 journal 文件"
+    if [[ ! -d /var/log/journal ]]; then
+        print_status "ERROR" "未检测到持久化日志目录: /var/log/journal"
+        return 1
+    fi
+
+    local persistent_journal_file
+    persistent_journal_file=$(sudo find /var/log/journal -maxdepth 2 -type f -name '*.journal*' -print -quit 2>/dev/null)
+    if [[ -z "$persistent_journal_file" ]]; then
+        print_status "ERROR" "未检测到 /var/log/journal 下的 .journal 文件"
+        return 1
+    fi
+
+    print_status "SUCCESS" "已检测到持久化 journal 文件: $persistent_journal_file"
+    sudo ls -ld /var/log/journal 2>/dev/null || true
+    sudo find /var/log/journal -maxdepth 2 -type f -name '*.journal*' -ls 2>/dev/null | head -20 || true
+    sudo journalctl --disk-usage 2>/dev/null || true
+    print_status "SUCCESS" "当前 boot 的 journal 已写入 /var/log/journal"
+    print_status "INFO" "无需重启可验证当前落盘；历史 boot 仍需重启后用 journalctl --list-boots 验证"
+}
+
 # 显示菜单
 show_menu() {
     clear
@@ -896,9 +981,10 @@ show_menu() {
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
         "创建自定义用户"
+        "启用 journald 持久化日志"
     )
     
-    for i in {1..15}; do
+    for i in {1..16}; do
         if is_executed "$i"; then
             local exec_time
             exec_time=$(get_execution_time "$i" | cut -c 6-16)
@@ -908,8 +994,8 @@ show_menu() {
         fi
     done
     
-    echo -e "\n16. 查看执行日志"
-    echo "17. 系统预检查"
+    echo -e "\n17. 查看执行日志"
+    echo "18. 系统预检查"
     echo "0.  退出"
     echo -e "${WHITE}==================================${NC}"
     echo -e "${CYAN}日志文件: $LOG_FILE${NC}"
@@ -944,7 +1030,7 @@ main() {
     
     while true; do
         show_menu
-        if ! read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-17): ")" choice; then
+        if ! read -rp "$(echo -e "${WHITE}[?]${NC} 请选择操作 (0-18): ")" choice; then
             print_status "WARNING" "输入结束，已退出"
             exit 0
         fi
@@ -965,20 +1051,21 @@ main() {
             13) configure_ssh_keys ;;
             14) show_ssh_fingerprints ;;
             15) create_custom_user ;;
-            16) view_logs ;;
-            17) pre_check ;;
+            16) enable_journald_persistence ;;
+            17) view_logs ;;
+            18) pre_check ;;
             0) 
                 print_status "INFO" "用户退出脚本"
                 echo -e "${GREEN}[+] 感谢使用！${NC}"
                 exit 0
                 ;;
             *)
-                print_status "WARNING" "无效选择，请输入 0-17"
+                print_status "WARNING" "无效选择，请输入 0-18"
                 sleep 1
                 ;;
         esac
         
-        if [[ "$choice" -ge 1 && "$choice" -le 15 ]] || [[ "$choice" -eq 17 ]]; then
+        if [[ "$choice" -ge 1 && "$choice" -le 16 ]] || [[ "$choice" -eq 18 ]]; then
             echo ""
             read -rp "$(echo -e "${WHITE}[?]${NC} 按回车键返回菜单...")"
         fi
