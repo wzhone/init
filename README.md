@@ -1,17 +1,20 @@
 # Linux 初始化脚本
 
-两套脚本：Rocky Linux / Alpine Linux。在装完系统后配置系统。
+两套脚本：Rocky 系 / Alpine Linux。在装完系统后配置系统。
 
 
 ## 支持环境
 
 - Rocky Linux 8 - 10
+- AlmaLinux 8 - 10
+- Oracle Linux 8 - 9
+- CentOS Stream 9 - 10
 - Alpine Linux 3.20 - 3.23
 
 
 ## 使用方式
 
-Rocky Linux：
+Rocky 系：
 ```bash
 bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/rocky.sh)
 ```
