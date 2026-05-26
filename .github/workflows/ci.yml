@@ -42,7 +42,7 @@ jobs:
       - name: Run pre_check
         run: |
           set -euxo pipefail
-          printf "\n" | bash ./rocky.sh pre_check
+          bash ./rocky.sh pre_check
 
   alpine:
     name: Alpine ${{ matrix.version }} tests
@@ -67,8 +67,7 @@ jobs:
           set -euxo pipefail
           shellcheck -x alpine.sh
 
-      - name: Test script basic functionality
+      - name: Run pre_check
         run: |
           set -euxo pipefail
-          # 15=系统预检查, 第二个换行=返回菜单, 0=退出
-          printf "15\n\n0\n" | bash ./alpine.sh
+          bash ./alpine.sh pre_check
