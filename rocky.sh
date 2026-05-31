@@ -572,6 +572,13 @@ install_zsh_tools() {
         return 1
     fi
 
+    run_as_zsh_user() {
+        (
+            cd "$zsh_home" || return 1
+            sudo -H -u "$zsh_user" env HOME="$zsh_home" USER="$zsh_user" LOGNAME="$zsh_user" "$@"
+        )
+    }
+
     if ! prompt_user "确认要为 $zsh_user 安装 ZSH 工具链"; then
         print_status "SKIP" "已跳过 ZSH 工具链安装"
         return 77
@@ -590,25 +597,52 @@ install_zsh_tools() {
     check_result $? "ZSH 安装完成" "ZSH 安装失败" || return 1
     
     # 更改默认 shell
-    sudo chsh -s "$(command -v zsh)" "$zsh_user"
-    check_result $? "$zsh_user 的默认 shell 已更改为 ZSH" "默认 shell 更改失败" || return 1
+    local zsh_path
+    local current_shell
+    local zsh_real
+    local current_shell_real
+    zsh_path="$(command -v zsh)"
+    current_shell="$(getent passwd "$zsh_user" | cut -d: -f7)"
+    zsh_real="$(readlink -f "$zsh_path" 2>/dev/null || echo "$zsh_path")"
+    current_shell_real="$(readlink -f "$current_shell" 2>/dev/null || echo "$current_shell")"
+    if [[ "$current_shell" == "$zsh_path" || "$current_shell_real" == "$zsh_real" ]]; then
+        print_status "INFO" "$zsh_user 的默认 shell 已经是 ZSH"
+    else
+        sudo chsh -s "$zsh_path" "$zsh_user"
+        check_result $? "$zsh_user 的默认 shell 已更改为 ZSH" "默认 shell 更改失败" || return 1
+    fi
     
     # 安装 Oh My Zsh
-    if [[ ! -d "$zsh_home/.oh-my-zsh" ]]; then
+    local omz_main="$zsh_home/.oh-my-zsh/oh-my-zsh.sh"
+    if [[ ! -f "$omz_main" ]]; then
+        if [[ -d "$zsh_home/.oh-my-zsh" ]]; then
+            print_status "ERROR" "检测到不完整的 Oh My Zsh 目录: $zsh_home/.oh-my-zsh，请清理后重试"
+            return 1
+        fi
+
         print_status "PROGRESS" "安装 Oh My Zsh"
-        sudo -u "$zsh_user" env HOME="$zsh_home" RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
-            sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-        check_result $? "Oh My Zsh 安装完成" "Oh My Zsh 安装失败" || return 1
+        local omz_install_script
+        omz_install_script="$(mktemp)"
+        curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o "$omz_install_script"
+        check_result $? "Oh My Zsh 安装脚本下载完成" "Oh My Zsh 安装脚本下载失败" || {
+            rm -f "$omz_install_script"
+            return 1
+        }
+        chmod 755 "$omz_install_script"
+        run_as_zsh_user env RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
+            sh -c 'cd "$HOME" && sh "$1" --unattended' sh "$omz_install_script"
+        local omz_status=$?
+        rm -f "$omz_install_script"
+        check_result "$omz_status" "Oh My Zsh 安装完成" "Oh My Zsh 安装失败" || return 1
     fi
     
     local zsh_custom="$zsh_home/.oh-my-zsh/custom"
-    sudo -u "$zsh_user" mkdir -p "$zsh_custom/themes" "$zsh_custom/plugins"
+    run_as_zsh_user mkdir -p "$zsh_custom/themes" "$zsh_custom/plugins"
     
     # 安装 Powerlevel10k 主题
     if [[ ! -d "$zsh_custom/themes/powerlevel10k" ]]; then
         print_status "PROGRESS" "安装 Powerlevel10k 主题"
-        sudo -u "$zsh_user" env HOME="$zsh_home" \
-            git clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$zsh_custom/themes/powerlevel10k"
+        run_as_zsh_user git -C "$zsh_home" clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$zsh_custom/themes/powerlevel10k"
         check_result $? "Powerlevel10k 主题安装完成" "主题安装失败" || return 1
     fi
     
@@ -616,8 +650,16 @@ install_zsh_tools() {
     print_status "PROGRESS" "配置 ZSH 设置"
     local zshrc="$zsh_home/.zshrc"
     if [[ ! -f "$zshrc" ]]; then
-        sudo -u "$zsh_user" touch "$zshrc"
+        run_as_zsh_user touch "$zshrc"
     fi
+
+    # 确保此前中断的 Oh My Zsh 安装也能补齐必要入口
+    if sudo grep -q '^export ZSH=' "$zshrc"; then
+        sudo sed -i 's|^export ZSH=.*|export ZSH="$HOME/.oh-my-zsh"|' "$zshrc"
+    else
+        echo 'export ZSH="$HOME/.oh-my-zsh"' | sudo tee -a "$zshrc" >/dev/null
+    fi
+    check_result $? "ZSH 路径配置完成" "ZSH 路径配置失败" || return 1
     
     # 修改主题设置
     if sudo grep -q '^ZSH_THEME=' "$zshrc"; then
@@ -634,6 +676,11 @@ install_zsh_tools() {
         echo 'plugins=(git zsh-syntax-highlighting zsh-autosuggestions)' | sudo tee -a "$zshrc" >/dev/null
     fi
     check_result $? "ZSH 插件配置完成" "ZSH 插件配置失败" || return 1
+
+    if ! sudo grep -Eq '^[[:space:]]*source[[:space:]]+.*oh-my-zsh\.sh' "$zshrc"; then
+        echo 'source $ZSH/oh-my-zsh.sh' | sudo tee -a "$zshrc" >/dev/null
+    fi
+    check_result $? "Oh My Zsh 入口配置完成" "Oh My Zsh 入口配置失败" || return 1
     
     # 添加自定义 alias 到 .zshrc 末尾
     if ! sudo grep -q '# 自定义 alias' "$zshrc"; then
@@ -672,7 +719,7 @@ EOF
         
         if [[ ! -d "$plugin_dir" ]]; then
             print_status "PROGRESS" "安装 $plugin_name 插件"
-            sudo -u "$zsh_user" env HOME="$zsh_home" git clone --depth=1 "$plugin_url" "$plugin_dir"
+            run_as_zsh_user git -C "$zsh_home" clone --depth=1 "$plugin_url" "$plugin_dir"
             check_result $? "$plugin_name 插件安装完成" "$plugin_name 插件安装失败" || return 1
         fi
     done
@@ -680,9 +727,9 @@ EOF
     # 安装 FZF
     if [[ ! -d "$zsh_home/.fzf" ]]; then
         print_status "PROGRESS" "安装 FZF"
-        sudo -u "$zsh_user" env HOME="$zsh_home" git clone --depth 1 https://github.com/junegunn/fzf.git "$zsh_home/.fzf"
+        run_as_zsh_user git -C "$zsh_home" clone --depth 1 https://github.com/junegunn/fzf.git "$zsh_home/.fzf"
         check_result $? "FZF 下载完成" "FZF 下载失败" || return 1
-        sudo -u "$zsh_user" env HOME="$zsh_home" "$zsh_home/.fzf/install" --all
+        run_as_zsh_user sh -c 'cd "$HOME" && "$HOME/.fzf/install" --all'
         check_result $? "FZF 安装完成" "FZF 安装失败" || return 1
     fi
 
