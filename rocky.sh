@@ -630,7 +630,7 @@ install_zsh_tools() {
         }
         chmod 755 "$omz_install_script"
         run_as_zsh_user env RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
-            sh -c 'cd "$HOME" && sh "$1" --unattended' sh "$omz_install_script"
+            sh -c "cd \"\$HOME\" && sh \"\$1\" --unattended" sh "$omz_install_script"
         local omz_status=$?
         rm -f "$omz_install_script"
         check_result "$omz_status" "Oh My Zsh 安装完成" "Oh My Zsh 安装失败" || return 1
@@ -657,7 +657,7 @@ install_zsh_tools() {
     if sudo grep -q '^export ZSH=' "$zshrc"; then
         sudo sed -i 's|^export ZSH=.*|export ZSH="$HOME/.oh-my-zsh"|' "$zshrc"
     else
-        echo 'export ZSH="$HOME/.oh-my-zsh"' | sudo tee -a "$zshrc" >/dev/null
+        echo "export ZSH=\"\$HOME/.oh-my-zsh\"" | sudo tee -a "$zshrc" >/dev/null
     fi
     check_result $? "ZSH 路径配置完成" "ZSH 路径配置失败" || return 1
     
@@ -678,7 +678,7 @@ install_zsh_tools() {
     check_result $? "ZSH 插件配置完成" "ZSH 插件配置失败" || return 1
 
     if ! sudo grep -Eq '^[[:space:]]*source[[:space:]]+.*oh-my-zsh\.sh' "$zshrc"; then
-        echo 'source $ZSH/oh-my-zsh.sh' | sudo tee -a "$zshrc" >/dev/null
+        echo "source \$ZSH/oh-my-zsh.sh" | sudo tee -a "$zshrc" >/dev/null
     fi
     check_result $? "Oh My Zsh 入口配置完成" "Oh My Zsh 入口配置失败" || return 1
     
@@ -729,7 +729,7 @@ EOF
         print_status "PROGRESS" "安装 FZF"
         run_as_zsh_user git -C "$zsh_home" clone --depth 1 https://github.com/junegunn/fzf.git "$zsh_home/.fzf"
         check_result $? "FZF 下载完成" "FZF 下载失败" || return 1
-        run_as_zsh_user sh -c 'cd "$HOME" && "$HOME/.fzf/install" --all'
+        run_as_zsh_user sh -c "cd \"\$HOME\" && \"\$HOME/.fzf/install\" --all"
         check_result $? "FZF 安装完成" "FZF 安装失败" || return 1
     fi
 
