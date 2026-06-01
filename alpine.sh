@@ -387,6 +387,18 @@ configure_ssh() {
 # ========== 4) 启用 edge 仓库 ==========
 setup_edge_repo() {
     local edge_testing_repo="@edge_testing https://dl-cdn.alpinelinux.org/alpine/edge/testing"
+    local ans
+
+    read -r -p "[?] 是否启用 Alpine edge/testing 仓库？[y/N]: " ans
+    case "$ans" in
+        y|Y)
+            ;;
+        *)
+            print_status "INFO" "已跳过启用 edge/testing 仓库"
+            return 77
+            ;;
+    esac
+
     if ! ensure_apk_repo "$edge_testing_repo"; then
         return 1
     fi
@@ -589,9 +601,20 @@ install_docker() {
     rc-service docker start >/dev/null 2>&1
     check_result $? "Docker 已安装并启动" "Docker 启动失败"
 
+    local TARGET_USER="${SUDO_USER:-$USER}"
+    local ans
+    read -r -p "[?] 是否将当前用户加入 docker 组？这等价于授予 root 级权限 [y/N]: " ans
+    case "$ans" in
+        y|Y)
+            ;;
+        *)
+            print_status "INFO" "已跳过加入 docker 组"
+            return 0
+            ;;
+    esac
+
     # 将当前（或 sudo 调用者）加入 docker 组
     addgroup -S docker >/dev/null 2>&1 || true
-    local TARGET_USER="${SUDO_USER:-$USER}"
     if [[ -n "$TARGET_USER" ]]; then
         addgroup "$TARGET_USER" docker >/dev/null 2>&1 || true
     fi
