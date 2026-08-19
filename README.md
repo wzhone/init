@@ -30,7 +30,7 @@ bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/alpine.sh)
 
 EL 版：
 - 基础系统：主机名、代理、NTS 时间同步（chrony）、TCP BBR、Swap、journald 持久化日志
-- 安全加固：SSH 端口/空密码/可选禁 root、AIDE、自动安全更新
+- 安全加固：SSH 端口/空密码/可选禁 root、AIDE、自动更新
 - 开发环境：基础工具包、Zsh + Oh My Zsh + 主题/插件 + FZF
 - 审计与可视：Lynis 安全审计、SSH 主机指纹、执行日志
 - 其他：Docker CE、SSH 公钥、用户创建
@@ -56,7 +56,7 @@ EL 版（`el.sh`）：
 8. NTS 时间同步（chrony）
 9. TCP BBR
 10. 创建 Swap
-11. 自动安全更新
+11. 自动更新
 12. AIDE 文件完整性
 13. 安全审计
 14. Docker CE
