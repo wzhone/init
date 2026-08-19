@@ -15,8 +15,8 @@ USER_HOME="$(getent passwd "$SCRIPT_USER" | cut -d: -f6)"
 [[ -z "$USER_HOME" ]] && USER_HOME="$HOME"
 [[ -z "$USER_HOME" ]] && USER_HOME="/root"
 readonly LOG_DIR="$USER_HOME/.local/state/init"
-readonly LOG_FILE="$LOG_DIR/rocky-init.log"
-readonly CONFIG_FILE="$LOG_DIR/rocky-init.conf"
+readonly LOG_FILE="$LOG_DIR/el-init.log"
+readonly CONFIG_FILE="$LOG_DIR/el-init.conf"
 
 # 颜色定义
 readonly RED='\033[0;31m'
@@ -200,21 +200,45 @@ check_port() {
 # 配置防火墙端口
 configure_firewall_port() {
     local port=$1
-    
+
     if command -v firewall-cmd &>/dev/null; then
         print_status "PROGRESS" "配置防火墙端口 $port"
-        if sudo firewall-cmd --add-port="$port"/tcp --permanent &>/dev/null && \
-           sudo firewall-cmd --reload &>/dev/null; then
-            print_status "SUCCESS" "端口 $port 已开放"
-            return 0
-        else
-            print_status "ERROR" "防火墙配置失败"
+        local -a zones=()
+        local zone
+        mapfile -t zones < <(sudo firewall-cmd --get-active-zones 2>/dev/null | awk '/^[^[:space:]]/ {print $1}')
+        if (( ${#zones[@]} == 0 )); then
+            print_status "ERROR" "未检测到活动防火墙 zone"
             return 1
         fi
+        for zone in "${zones[@]}"; do
+            if ! sudo firewall-cmd --zone="$zone" --add-port="$port"/tcp &>/dev/null || \
+               ! sudo firewall-cmd --zone="$zone" --add-port="$port"/tcp --permanent &>/dev/null; then
+                print_status "ERROR" "防火墙 zone $zone 配置失败"
+                return 1
+            fi
+        done
+        print_status "SUCCESS" "端口 $port 已在活动 zone (${zones[*]}) 开放"
+        return 0
     else
         print_status "ERROR" "未检测到防火墙服务，无法保证新端口可用"
         return 1
     fi
+}
+
+get_journald_setting() {
+    local key=$1
+    awk -v key="$key" '
+        /^[[:space:]]*\[/ {
+            in_journal = $0 ~ /^[[:space:]]*\[Journal\][[:space:]]*$/
+            next
+        }
+        in_journal && $0 ~ "^[[:space:]]*" key "[[:space:]]*=" {
+            value = $0
+            sub(/^[^=]*=[[:space:]]*/, "", value)
+            sub(/[[:space:]]*$/, "", value)
+        }
+        END { print value }
+    '
 }
 
 # 系统检查函数
@@ -256,7 +280,7 @@ pre_check() {
     print_status "INFO" "Swap: ${swap_total_mb:-未知}MB"
 
     local service
-    for service in sshd chronyd docker dnf-automatic.timer systemd-journald; do
+    for service in sshd chronyd docker dnf-automatic-install.timer systemd-journald; do
         if systemctl list-unit-files "$service" --no-legend 2>/dev/null | grep -q . || systemctl status "$service" &>/dev/null; then
             if systemctl is-active --quiet "$service"; then
                 print_status "SUCCESS" "$service: active"
@@ -276,7 +300,9 @@ pre_check() {
         print_status "INFO" "BBR: 当前拥塞控制为 ${current_congestion_control:-未知}"
     fi
 
-    if systemd-analyze cat-config systemd/journald.conf 2>/dev/null | grep -Eq '^[[:space:]]*Storage[[:space:]]*=[[:space:]]*persistent[[:space:]]*$' && \
+    local loaded_journald_config
+    if loaded_journald_config=$(systemd-analyze cat-config systemd/journald.conf 2>/dev/null) && \
+       [[ "$(get_journald_setting Storage <<< "$loaded_journald_config")" == "persistent" ]] && \
        sudo find /var/log/journal -maxdepth 2 -type f -name '*.journal*' -print -quit 2>/dev/null | grep -q .; then
         print_status "SUCCESS" "journald: 已持久化写入 /var/log/journal"
     else
@@ -339,6 +365,7 @@ change_hostname() {
 
 # 3. 关闭 SELinux
 disable_selinux() {
+    local current_status
     current_status=$(getenforce 2>/dev/null || echo "Unknown")
     print_status "INFO" "当前 SELinux 状态: $current_status"
     
@@ -363,7 +390,11 @@ disable_selinux() {
     print_status "PROGRESS" "禁用 SELinux"
     
     sudo sed -i 's/^SELINUX=.*/SELINUX=disabled/' /etc/selinux/config &>/dev/null
-    sudo setenforce 0 &>/dev/null
+    check_result $? "" "SELinux 配置修改失败" || return 1
+    if [[ "$current_status" == "Enforcing" ]]; then
+        sudo setenforce 0 &>/dev/null
+        check_result $? "" "SELinux 运行状态修改失败" || return 1
+    fi
     
     print_status "SUCCESS" "SELinux 已禁用（重启后生效）"
 }
@@ -375,12 +406,12 @@ configure_ssh() {
     # 获取用户输入的SSH端口
     local ssh_port=""
     while true; do
-        read -rp "$(echo -e "${WHITE}[?]${NC} SSH 端口号 (1024-65535，默认 2222): ")" ssh_port
+        read -rp "$(echo -e "${WHITE}[?]${NC} SSH 端口号 (22-65535，默认 2222): ")" ssh_port
         ssh_port=${ssh_port:-2222}
         
         # 验证端口号
-        if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || [[ $ssh_port -lt 1024 ]] || [[ $ssh_port -gt 65535 ]]; then
-            print_status "ERROR" "端口号无效，请输入 1024-65535 之间的数字"
+        if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || [[ $ssh_port -lt 22 ]] || [[ $ssh_port -gt 65535 ]]; then
+            print_status "ERROR" "端口号无效，请输入 22-65535 之间的数字"
             continue
         fi
         
@@ -428,25 +459,10 @@ configure_ssh() {
         fi
     fi
     
-    # 让用户选择是否禁止 root 登录，并在没有其它可登录用户时给出明确警告
-    local permit_root_choice="yes"
+    # 让用户选择是否禁止 root 登录
+    local permit_root_choice=""
     if prompt_user "是否禁止 root 通过 SSH 登录（推荐）? 提示：如果系统上没有第二个可登录用户，禁止 root 登录 会导致无法远程进入 (风险很大)"; then
-        # 用户选择禁止 root 登录 -> 但先检查是否存在非 system 的可登录用户
-        local other_user
-        other_user=$(awk -F: '($3>=1000)&&($7!~/(nologin|false)/){print $1; exit}' /etc/passwd 2>/dev/null || true)
-        if [[ -z "$other_user" ]]; then
-            print_status "WARNING" "未检测到 UID>=1000 且 shell 非 nologin/false 的普通用户。禁止 root 登录 可能导致远程被锁定。"
-            if ! prompt_user "仍然继续禁止 root 登录？"; then
-                permit_root_choice="yes"
-            else
-                permit_root_choice="no"
-            fi
-        else
-            permit_root_choice="no"
-        fi
-    else
-        # 用户选择不禁止 root 登录
-        permit_root_choice="yes"
+        permit_root_choice="no"
     fi
 
     # 防火墙放行（失败则不改 sshd_config）
@@ -477,12 +493,7 @@ configure_ssh() {
         fi
         print_status "INFO" "已设置 PermitRootLogin no（禁止 root 登录）"
     else
-        if sudo grep -q -E '^PermitRootLogin ' "$ssh_config"; then
-            sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin yes/' "$ssh_config"
-        else
-            echo "PermitRootLogin yes" | sudo tee -a "$ssh_config" >/dev/null
-        fi
-        print_status "INFO" "保持 PermitRootLogin yes（允许 root 登录）"
+        print_status "INFO" "未修改 PermitRootLogin"
     fi
 
     # 其余连接控制配置
@@ -497,27 +508,6 @@ configure_ssh() {
         echo "ClientAliveCountMax 2" | sudo tee -a "$ssh_config" >/dev/null
     fi
 
-    # Fail2ban 配置
-    if prompt_user "安装 fail2ban 防护"; then
-        print_status "PROGRESS" "配置 fail2ban"
-        sudo dnf install -y epel-release fail2ban &>/dev/null
-        
-        sudo tee /etc/fail2ban/jail.local > /dev/null <<EOF
-[DEFAULT]
-bantime = 3600
-findtime = 600
-maxretry = 3
-
-[sshd]
-enabled = true
-port = $ssh_port
-logpath = %(sshd_log)s
-backend = %(sshd_backend)s
-EOF
-        sudo systemctl enable --now fail2ban &>/dev/null
-        print_status "SUCCESS" "fail2ban 已配置 (端口: $ssh_port)"
-    fi
-    
     # 重启前校验配置
     if ! sudo sshd -t -f "$ssh_config" &>/dev/null; then
         print_status "ERROR" "sshd_config 校验失败，已回滚"
@@ -539,12 +529,10 @@ EOF
 # 6. 安装基础软件包
 install_basic_packages() {
     print_status "PROGRESS" "安装基础软件包"
-    
-    local packages=(
-        "tar" "git" "rsync" "telnet" "tree" "net-tools"
-        "p7zip" "vim" "lrzsz" "wget" "netcat" "yum-utils" "util-linux-user"
-        "htop" "iotop" "iftop" "nload" "sysstat" "dstat" "ncdu" "tmux"
-    )
+
+    local archive_package="7zip"
+    [[ "${VERSION_ID%%.*}" == "8" ]] && archive_package="p7zip"
+    local packages=("$archive_package" "wget" "git" "vim" "atop" "sysstat" "tmux")
     
     sudo dnf update -y
     sudo dnf install -y epel-release
@@ -572,221 +560,214 @@ install_zsh_tools() {
         return 1
     fi
 
-    run_as_zsh_user() {
-        (
-            cd "$zsh_home" || return 1
-            sudo -H -u "$zsh_user" env HOME="$zsh_home" USER="$zsh_user" LOGNAME="$zsh_user" "$@"
-        )
-    }
-
     if ! prompt_user "确认要为 $zsh_user 安装 ZSH 工具链"; then
         print_status "SKIP" "已跳过 ZSH 工具链安装"
         return 77
     fi
-    
-    # 检查依赖
-    for cmd in git curl; do
-        if ! command -v "$cmd" &>/dev/null; then
-            sudo dnf install -y "$cmd" &>/dev/null
-            check_result $? "$cmd 安装完成" "$cmd 安装失败" || return 1
-        fi
-    done
-    
-    # 安装 ZSH
-    sudo dnf install -y zsh
-    check_result $? "ZSH 安装完成" "ZSH 安装失败" || return 1
-    
-    # 更改默认 shell
-    local zsh_path
-    local current_shell
-    local zsh_real
-    local current_shell_real
-    zsh_path="$(command -v zsh)"
-    current_shell="$(getent passwd "$zsh_user" | cut -d: -f7)"
-    zsh_real="$(readlink -f "$zsh_path" 2>/dev/null || echo "$zsh_path")"
-    current_shell_real="$(readlink -f "$current_shell" 2>/dev/null || echo "$current_shell")"
-    if [[ "$current_shell" == "$zsh_path" || "$current_shell_real" == "$zsh_real" ]]; then
-        print_status "INFO" "$zsh_user 的默认 shell 已经是 ZSH"
-    else
-        sudo chsh -s "$zsh_path" "$zsh_user"
-        check_result $? "$zsh_user 的默认 shell 已更改为 ZSH" "默认 shell 更改失败" || return 1
+
+    print_status "PROGRESS" "安装 ZSH、Git 和 FZF"
+    sudo dnf install -y epel-release &>/dev/null
+    check_result $? "EPEL 仓库已启用" "EPEL 仓库启用失败" || return 1
+    sudo dnf install -y zsh git fzf
+    check_result $? "ZSH 相关软件包安装完成" "ZSH 相关软件包安装失败" || return 1
+    if ! command -v curl &>/dev/null; then
+        sudo dnf install -y curl
+        check_result $? "curl 安装完成" "curl 安装失败" || return 1
     fi
-    
-    # 安装 Oh My Zsh
-    local omz_main="$zsh_home/.oh-my-zsh/oh-my-zsh.sh"
+
+    local -a as_zsh_user=(sudo -H -u "$zsh_user")
+    local zshrc="$zsh_home/.zshrc"
+    local zshrc_tmp
+    local zshrc_first_line
+    local zsh_path
+    if ! zsh_path="$("${as_zsh_user[@]}" sh -c 'command -v zsh')" || [[ -z "$zsh_path" ]]; then
+        print_status "ERROR" "无法确定 ZSH 可执行文件路径"
+        return 1
+    fi
+
+    if [[ ! -e "$zshrc" && ! -L "$zshrc" ]]; then
+        if ! zshrc_tmp="$("${as_zsh_user[@]}" mktemp "$zsh_home/.zshrc.el.XXXXXX")"; then
+            print_status "ERROR" "无法创建 ZSH 临时配置"
+            return 1
+        fi
+        if ! "${as_zsh_user[@]}" tee "$zshrc_tmp" >/dev/null <<'EOF'
+# Generated by el.sh
+if [[ -r "$HOME/.oh-my-zsh/oh-my-zsh.sh" ]]; then
+    export ZSH="$HOME/.oh-my-zsh"
+    ZSH_THEME="bira"
+    plugins=(
+        git
+        fzf
+        sudo
+        colored-man-pages
+        zsh-autosuggestions
+        zsh-syntax-highlighting
+    )
+    source "$ZSH/oh-my-zsh.sh"
+fi
+EOF
+        then
+            "${as_zsh_user[@]}" rm -f "$zshrc_tmp"
+            print_status "ERROR" "ZSH 配置写入失败"
+            return 1
+        fi
+        if ! "${as_zsh_user[@]}" "$zsh_path" -n "$zshrc_tmp" || \
+            ! "${as_zsh_user[@]}" ln "$zshrc_tmp" "$zshrc"; then
+            "${as_zsh_user[@]}" rm -f "$zshrc_tmp"
+            print_status "ERROR" "ZSH 配置校验或启用失败"
+            return 1
+        fi
+        "${as_zsh_user[@]}" rm -f "$zshrc_tmp"
+        print_status "SUCCESS" "已生成 ZSH 配置，使用 bira 主题"
+    else
+        zshrc_first_line="$("${as_zsh_user[@]}" sed -n '1p' "$zshrc" 2>/dev/null)"
+        if [[ "$zshrc_first_line" != '# Generated by el.sh' ]]; then
+            print_status "WARNING" "检测到已有 $zshrc，已保留且未自动修改"
+            print_status "INFO" "如需启用本工具链，请设置 ZSH_THEME=\"bira\"，并配置插件: git fzf sudo colored-man-pages zsh-autosuggestions zsh-syntax-highlighting"
+        fi
+    fi
+
+    local omz_dir="$zsh_home/.oh-my-zsh"
+    local omz_main="$omz_dir/oh-my-zsh.sh"
     if [[ ! -f "$omz_main" ]]; then
-        if [[ -d "$zsh_home/.oh-my-zsh" ]]; then
-            print_status "ERROR" "检测到不完整的 Oh My Zsh 目录: $zsh_home/.oh-my-zsh，请清理后重试"
+        if [[ -e "$omz_dir" || -L "$omz_dir" ]]; then
+            print_status "ERROR" "检测到不完整的 Oh My Zsh 路径: $omz_dir，请处理后重试"
             return 1
         fi
 
         print_status "PROGRESS" "安装 Oh My Zsh"
         local omz_install_script
-        omz_install_script="$(mktemp)"
-        curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o "$omz_install_script"
-        check_result $? "Oh My Zsh 安装脚本下载完成" "Oh My Zsh 安装脚本下载失败" || {
-            rm -f "$omz_install_script"
+        if ! omz_install_script="$(mktemp)"; then
+            print_status "ERROR" "无法创建 Oh My Zsh 临时安装文件"
             return 1
-        }
-        chmod 755 "$omz_install_script"
-        run_as_zsh_user env RUNZSH=no CHSH=no KEEP_ZSHRC=yes \
-            sh -c "cd \"\$HOME\" && sh \"\$1\" --unattended" sh "$omz_install_script"
-        local omz_status=$?
+        fi
+        if ! curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh -o "$omz_install_script"; then
+            rm -f "$omz_install_script"
+            print_status "ERROR" "Oh My Zsh 安装脚本下载失败"
+            return 1
+        fi
+        if ! "${as_zsh_user[@]}" sh -c "cd \"\$HOME\" && exec sh -s -- \"\$@\"" sh \
+            --unattended --keep-zshrc < "$omz_install_script"; then
+            rm -f "$omz_install_script"
+            print_status "ERROR" "Oh My Zsh 安装失败"
+            return 1
+        fi
         rm -f "$omz_install_script"
-        check_result "$omz_status" "Oh My Zsh 安装完成" "Oh My Zsh 安装失败" || return 1
-    fi
-    
-    local zsh_custom="$zsh_home/.oh-my-zsh/custom"
-    run_as_zsh_user mkdir -p "$zsh_custom/themes" "$zsh_custom/plugins"
-    
-    # 安装 Powerlevel10k 主题
-    if [[ ! -d "$zsh_custom/themes/powerlevel10k" ]]; then
-        print_status "PROGRESS" "安装 Powerlevel10k 主题"
-        run_as_zsh_user git -C "$zsh_home" clone --depth=1 https://github.com/romkatv/powerlevel10k.git "$zsh_custom/themes/powerlevel10k"
-        check_result $? "Powerlevel10k 主题安装完成" "主题安装失败" || return 1
-    fi
-    
-    # 修改 .zshrc 配置文件
-    print_status "PROGRESS" "配置 ZSH 设置"
-    local zshrc="$zsh_home/.zshrc"
-    if [[ ! -f "$zshrc" ]]; then
-        run_as_zsh_user touch "$zshrc"
+        print_status "SUCCESS" "Oh My Zsh 安装完成"
     fi
 
-    # 确保此前中断的 Oh My Zsh 安装也能补齐必要入口
-    if sudo grep -q '^export ZSH=' "$zshrc"; then
-        sudo sed -i 's|^export ZSH=.*|export ZSH="$HOME/.oh-my-zsh"|' "$zshrc"
-    else
-        echo "export ZSH=\"\$HOME/.oh-my-zsh\"" | sudo tee -a "$zshrc" >/dev/null
-    fi
-    check_result $? "ZSH 路径配置完成" "ZSH 路径配置失败" || return 1
-    
-    # 修改主题设置
-    if sudo grep -q '^ZSH_THEME=' "$zshrc"; then
-        sudo sed -i 's|^ZSH_THEME=.*|ZSH_THEME="powerlevel10k/powerlevel10k"|' "$zshrc"
-    else
-        echo 'ZSH_THEME="powerlevel10k/powerlevel10k"' | sudo tee -a "$zshrc" >/dev/null
-    fi
-    check_result $? "ZSH 主题配置完成" "ZSH 主题配置失败" || return 1
-    
-    # 修改插件设置
-    if sudo grep -q '^plugins=' "$zshrc"; then
-        sudo sed -i 's/^plugins=.*/plugins=(git zsh-syntax-highlighting zsh-autosuggestions)/' "$zshrc"
-    else
-        echo 'plugins=(git zsh-syntax-highlighting zsh-autosuggestions)' | sudo tee -a "$zshrc" >/dev/null
-    fi
-    check_result $? "ZSH 插件配置完成" "ZSH 插件配置失败" || return 1
+    local zsh_custom="$omz_dir/custom"
+    "${as_zsh_user[@]}" mkdir -p "$zsh_custom/plugins"
+    check_result $? "Oh My Zsh 自定义目录已准备" "自定义目录创建失败" || return 1
 
-    if ! sudo grep -Eq '^[[:space:]]*source[[:space:]]+.*oh-my-zsh\.sh' "$zshrc"; then
-        echo "source \$ZSH/oh-my-zsh.sh" | sudo tee -a "$zshrc" >/dev/null
-    fi
-    check_result $? "Oh My Zsh 入口配置完成" "Oh My Zsh 入口配置失败" || return 1
-    
+    local plugin_name
+    local plugin_dir
+    for plugin_name in zsh-autosuggestions zsh-syntax-highlighting; do
+        plugin_dir="$zsh_custom/plugins/$plugin_name"
+        if [[ -f "$plugin_dir/$plugin_name.plugin.zsh" ]]; then
+            continue
+        fi
+        if [[ -e "$plugin_dir" || -L "$plugin_dir" ]]; then
+            print_status "ERROR" "检测到不完整的插件目录: $plugin_dir，请处理后重试"
+            return 1
+        fi
+        print_status "PROGRESS" "安装 $plugin_name 插件"
+        "${as_zsh_user[@]}" git clone --depth=1 "https://github.com/zsh-users/$plugin_name.git" "$plugin_dir"
+        check_result $? "$plugin_name 插件安装完成" "$plugin_name 插件安装失败" || return 1
+    done
+
+    local required_zsh_file
+    for required_zsh_file in \
+        "$omz_main" \
+        "$omz_dir/themes/bira.zsh-theme" \
+        "$omz_dir/plugins/git/git.plugin.zsh" \
+        "$omz_dir/plugins/fzf/fzf.plugin.zsh" \
+        "$omz_dir/plugins/sudo/sudo.plugin.zsh" \
+        "$omz_dir/plugins/colored-man-pages/colored-man-pages.plugin.zsh" \
+        "$zsh_custom/plugins/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh" \
+        "$zsh_custom/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh"
+    do
+        if ! "${as_zsh_user[@]}" test -r "$required_zsh_file"; then
+            print_status "ERROR" "ZSH 组件不可读: $required_zsh_file"
+            return 1
+        fi
+    done
+
     # 添加自定义 alias 到 .zshrc 末尾
     if ! sudo grep -q '# 自定义 alias' "$zshrc"; then
-        sudo tee -a "$zshrc" >/dev/null << 'EOF'
+        sudo tee -a "$zshrc" >/dev/null <<'EOF'
 
 # 自定义 alias
-alias dunow='du -hl --max-depth=1'
+alias dunow='du -xhd 1'
 alias rs='sudo systemctl restart'
 alias st='sudo systemctl status'
-alias systemctl='sudo systemctl'
 alias docker='sudo docker'
 alias cat='sudo cat'
-alias dnf='sudo dnf'
 alias tail='sudo tail'
-alias mv='mv -i'
-alias rm='rm -i'
-
-# 减少更新提醒
-export UPDATE_ZSH_DAYS=365
 EOF
         check_result $? "自定义 alias 添加完成" "alias 配置失败" || return 1
     else
         print_status "INFO" "自定义 alias 已存在，跳过追加"
     fi
 
-    # 安装插件
-    local plugins=(
-        "zsh-autosuggestions|https://github.com/zsh-users/zsh-autosuggestions"
-        "zsh-syntax-highlighting|https://github.com/zsh-users/zsh-syntax-highlighting"
-    )
-    
-    for plugin_info in "${plugins[@]}"; do
-        local plugin_name="${plugin_info%|*}"
-        local plugin_url="${plugin_info#*|}"
-        local plugin_dir="$zsh_custom/plugins/$plugin_name"
-        
-        if [[ ! -d "$plugin_dir" ]]; then
-            print_status "PROGRESS" "安装 $plugin_name 插件"
-            run_as_zsh_user git -C "$zsh_home" clone --depth=1 "$plugin_url" "$plugin_dir"
-            check_result $? "$plugin_name 插件安装完成" "$plugin_name 插件安装失败" || return 1
-        fi
-    done
-    
-    # 安装 FZF
-    if [[ ! -d "$zsh_home/.fzf" ]]; then
-        print_status "PROGRESS" "安装 FZF"
-        run_as_zsh_user git -C "$zsh_home" clone --depth 1 https://github.com/junegunn/fzf.git "$zsh_home/.fzf"
-        check_result $? "FZF 下载完成" "FZF 下载失败" || return 1
-        run_as_zsh_user sh -c "cd \"\$HOME\" && \"\$HOME/.fzf/install\" --all"
-        check_result $? "FZF 安装完成" "FZF 安装失败" || return 1
+    if ! "${as_zsh_user[@]}" "$zsh_path" -n "$zshrc"; then
+        print_status "ERROR" "ZSH 配置语法检查失败: $zshrc"
+        return 1
     fi
 
-    sudo chown -R "$zsh_user":"$(id -gn "$zsh_user")" "$zsh_home/.oh-my-zsh" "$zsh_home/.zshrc" "$zsh_home/.fzf" 2>/dev/null || true
-    
+    local current_shell
+    local zsh_real
+    local current_shell_real
+    current_shell="$(getent passwd "$zsh_user" | cut -d: -f7)"
+    zsh_real="$(readlink -f "$zsh_path" 2>/dev/null || echo "$zsh_path")"
+    current_shell_real="$(readlink -f "$current_shell" 2>/dev/null || echo "$current_shell")"
+    if [[ "$current_shell" == "$zsh_path" || "$current_shell_real" == "$zsh_real" ]]; then
+        print_status "INFO" "$zsh_user 的默认 shell 已经是 ZSH"
+    else
+        sudo usermod -s "$zsh_path" "$zsh_user"
+        check_result $? "$zsh_user 的默认 shell 已更改为 ZSH" "默认 shell 更改失败" || return 1
+    fi
+
     print_status "SUCCESS" "ZSH 工具链已为 $zsh_user 安装完成，请重新登录应用更改"
 }
 
 # 8. 同步系统时间
 sync_system_time() {
-    print_status "PROGRESS" "配置时间同步"
+    print_status "PROGRESS" "配置 NTS 时间同步"
     
     sudo dnf install -y chrony &>/dev/null
     check_result $? "Chrony 安装完成" "Chrony 安装失败" || return 1
-    
-    # 配置时间服务器
+
     local chrony_conf="/etc/chrony.conf"
-    sudo cp "$chrony_conf" "${chrony_conf}.bak"
-    
-    # 注释默认服务器并添加新的
-    sudo sed -i 's/^server/#server/' "$chrony_conf"
-    
-    local time_servers=(
-        "pool.ntp.org"
-        "time.windows.com"
-        "time.nist.gov"
-        "time.google.com"
-    )
-    
-    for server in "${time_servers[@]}"; do
-        echo "server $server iburst" | sudo tee -a "$chrony_conf" >/dev/null
-    done
-    
-    sudo systemctl enable --now chronyd &>/dev/null
-    check_result $? "时间同步服务已启用" "时间同步配置失败"
-    
-    sleep 2
-    sudo chronyc sources 2>/dev/null | head -5
+    sudo sed -Ei '/^[[:space:]]*(server|pool|peer|authselectmode)[[:space:]]/d' "$chrony_conf" &&
+        sudo tee -a "$chrony_conf" >/dev/null <<'EOF'
+authselectmode require
+server time.cloudflare.com iburst nts
+server nts.netnod.se iburst nts
+EOF
+    check_result $? "NTS 时间源已配置" "NTS 时间源配置失败" || return 1
+
+    sudo systemctl enable chronyd &>/dev/null && sudo systemctl restart chronyd &>/dev/null
+    check_result $? "NTS 时间同步服务已启用" "NTS 时间同步配置失败" || return 1
+
+    sudo chronyc -N authdata 2>/dev/null
 }
 
 # 9. 启用 TCP BBR
 enable_bbr() {
     print_status "PROGRESS" "启用 BBR 拥塞控制"
-    
-    local sysctl_conf="/etc/sysctl.conf"
-    local bbr_config=(
-        "net.core.default_qdisc=fq"
-        "net.ipv4.tcp_congestion_control=bbr"
-    )
-    
-    for config in "${bbr_config[@]}"; do
-        if ! grep -q "$config" "$sysctl_conf"; then
-            echo "$config" | sudo tee -a "$sysctl_conf" >/dev/null
-        fi
-    done
-    
-    if ! sudo sysctl -p &>/dev/null; then
+
+    local bbr_conf="/etc/sysctl.d/99-bbr.conf"
+    if ! sudo tee "$bbr_conf" >/dev/null <<'EOF'
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+    then
+        print_status "ERROR" "BBR 配置写入失败"
+        return 1
+    fi
+
+    if ! sudo sysctl -p "$bbr_conf" &>/dev/null; then
         print_status "ERROR" "BBR 配置加载失败"
         return 1
     fi
@@ -874,7 +855,13 @@ configure_swap() {
 
     local fstab_entry="/swapfile none swap sw 0 0"
     if ! sudo grep -Eq '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]+sw[[:space:]]+0[[:space:]]+0' /etc/fstab; then
-        echo "$fstab_entry" | sudo tee -a /etc/fstab >/dev/null
+        if ! echo "$fstab_entry" | sudo tee -a /etc/fstab >/dev/null; then
+            print_status "ERROR" "Swap 持久化配置写入失败"
+            if sudo swapoff "$swap_file" 2>/dev/null; then
+                sudo rm -f "$swap_file" 2>/dev/null || true
+            fi
+            return 1
+        fi
     fi
 
     print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_gb}G"
@@ -884,20 +871,18 @@ configure_swap() {
 # 11. 设置自动安全更新
 setup_auto_updates() {
     print_status "PROGRESS" "配置自动安全更新"
-    
+
     sudo dnf install -y dnf-automatic
     check_result $? "DNF automatic 安装完成" "安装失败" || return 1
-    
-    sudo sed -i 's/apply_updates = no/apply_updates = yes/g' /etc/dnf/automatic.conf
-    sudo systemctl enable --now dnf-automatic.timer
-    
-    sleep 2
-    if systemctl is-active --quiet dnf-automatic.timer; then
-        print_status "SUCCESS" "自动更新已配置"
-    else
-        print_status "ERROR" "自动更新配置失败"
-        return 1
-    fi
+
+    local upgrade_type="security"
+    [[ "$ID" == "centos" ]] && upgrade_type="default"
+    sudo sed -Ei "s/^[[:space:]]*upgrade_type[[:space:]]*=.*/upgrade_type = $upgrade_type/" \
+        /etc/dnf/automatic.conf
+    check_result $? "更新类型已配置: $upgrade_type" "更新配置失败" || return 1
+
+    sudo systemctl enable --now dnf-automatic-install.timer
+    check_result $? "自动安全更新已启用" "自动安全更新启用失败"
 }
 
 # 12. 配置 AIDE
@@ -928,35 +913,41 @@ configure_aide() {
     print_status "SUCCESS" "AIDE 配置完成"
 }
 
-# 13. 系统安全审计
-security_audit() {
-    print_status "PROGRESS" "执行系统安全审计"
-    
-    sudo dnf install -y lynis rkhunter 
-    
+# 13. Lynis 安全审计
+run_lynis_audit() {
+    print_status "PROGRESS" "执行 Lynis 安全审计"
+
+    sudo dnf install -y epel-release
+    check_result $? "EPEL 仓库已启用" "EPEL 仓库启用失败" || return 1
+
+    sudo dnf install -y lynis
+    check_result $? "Lynis 安装完成" "Lynis 安装失败" || return 1
+
     print_status "PROGRESS" "运行 Lynis 安全扫描"
     sudo lynis audit system --quiet
-    print_status "SUCCESS" "Lynis 审计完成，日志: /var/log/lynis.log"
-    
-    print_status "PROGRESS" "运行 RKHunter 扫描"
-    sudo rkhunter --update --quiet 
-    sudo rkhunter --check --skip-keypress --quiet
-    print_status "SUCCESS" "RKHunter 审计完成，日志: /var/log/rkhunter/rkhunter.log"
+    check_result $? "Lynis 审计完成，日志: /var/log/lynis.log" "Lynis 审计失败，日志: /var/log/lynis.log"
 }
 
 # 14. 安装 Docker
 install_docker() {
     print_status "PROGRESS" "安装 Docker CE"
-    
-    sudo dnf install -y yum-utils &>/dev/null
-    sudo yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &>/dev/null
+
+    sudo dnf install -y dnf-plugins-core &>/dev/null
+    check_result $? "Docker 仓库工具安装完成" "Docker 仓库工具安装失败" || return 1
+
+    sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &>/dev/null
+    check_result $? "Docker 仓库已配置" "Docker 仓库配置失败" || return 1
+
     sudo dnf install -y docker-ce docker-ce-cli containerd.io
     check_result $? "Docker 安装完成" "Docker 安装失败" || return 1
-    
+
     sudo systemctl enable --now docker &>/dev/null
-    sudo usermod -aG docker "$SCRIPT_USER"
-    
-    print_status "SUCCESS" "Docker 已安装，请重新登录应用用户组更改"
+    check_result $? "Docker 已安装并启动" "Docker 服务启用或启动失败"
+}
+
+validate_ssh_public_key() {
+    [[ ! "$1" =~ (^|[[:space:]])ssh-dss([[:space:]]|$) ]] &&
+        printf '%s\n' "$1" | ssh-keygen -lf - &>/dev/null
 }
 
 # 15. 配置 SSH 公钥
@@ -973,16 +964,15 @@ configure_ssh_keys() {
         print_status "SUCCESS" ".ssh 目录已创建"
     fi
     
-    read -rp "$(echo -e "${WHITE}[?]${NC} SSH 公钥 (格式: ssh-rsa AAAAB3...): ")" public_key
+    read -rp "$(echo -e "${WHITE}[?]${NC} SSH 公钥（单行）: ")" public_key
     
     if [[ -z "$public_key" ]]; then
         print_status "ERROR" "公钥不能为空"
         return 1
     fi
     
-    # 验证公钥格式
-    if [[ ! "$public_key" =~ ^(ssh-rsa|ssh-dss|ssh-ed25519|ecdsa-sha2-nistp(256|384|521))\ [A-Za-z0-9+/]+ ]]; then
-        print_status "ERROR" "无效的公钥格式"
+    if ! validate_ssh_public_key "$public_key"; then
+        print_status "ERROR" "无效或不支持的 SSH 公钥"
         return 1
     fi
     
@@ -1018,12 +1008,9 @@ show_ssh_fingerprints() {
             key_type=$(awk '{print $1}' "$key_file" 2>/dev/null)
             local sha256_fp
             sha256_fp=$(ssh-keygen -lf "$key_file" 2>/dev/null | awk '{print $2}')
-            local md5_fp
-            md5_fp=$(ssh-keygen -lf "$key_file" -E md5 2>/dev/null | awk '{print $2}')
             
             echo -e "\n${CYAN}类型:${NC} $key_type"
             echo -e "${CYAN}SHA256:${NC} $sha256_fp"
-            echo -e "${CYAN}MD5:${NC} $md5_fp"
             echo "-------------------------------"
         fi
     done
@@ -1058,12 +1045,20 @@ create_custom_user() {
     sudo useradd -m -s /bin/bash "$new_user"
     check_result $? "用户 $new_user 创建成功" "用户创建失败" || return 1
 
+    local new_user_home new_user_group
+    new_user_home=$(getent passwd "$new_user" | cut -d: -f6)
+    new_user_group=$(id -gn "$new_user" 2>/dev/null)
+    if [[ -z "$new_user_home" || -z "$new_user_group" ]]; then
+        print_status "ERROR" "无法获取 $new_user 的 home 或主组"
+        return 1
+    fi
+
     # 设置密码（可留空以禁用密码登录）
     read -rsp "$(echo -e "${WHITE}[?]${NC} 为 $new_user 设置密码（留空则不设置密码，回车跳过）: ")" passwd_input
     echo
     if [[ -n "$passwd_input" ]]; then
         echo "$new_user:$passwd_input" | sudo chpasswd
-        check_result $? "用户 $new_user 密码已设置" "设置密码失败"
+        check_result $? "用户 $new_user 密码已设置" "设置密码失败" || return 1
     else
         print_status "SKIP" "未为 $new_user 设置密码（建议使用 SSH 公钥登录）"
     fi
@@ -1071,7 +1066,7 @@ create_custom_user() {
     # 选择是否加入 wheel（sudo）组
     if prompt_user "是否将 $new_user 添加到 wheel (sudo) 组?"; then
         sudo usermod -aG wheel "$new_user"
-        check_result $? "已将 $new_user 添加到 wheel 组" "加入 wheel 组失败"
+        check_result $? "已将 $new_user 添加到 wheel 组" "加入 wheel 组失败" || return 1
     fi
 
     # 选择是否创建无密码 sudoers
@@ -1091,9 +1086,11 @@ create_custom_user() {
                 continue
             fi
             if ! getent group "$g_trimmed" &>/dev/null; then
-                sudo groupadd "$g_trimmed"
+                print_status "ERROR" "附加群组不存在: $g_trimmed"
+                return 1
             fi
             sudo usermod -aG "$g_trimmed" "$new_user"
+            check_result $? "" "加入群组 $g_trimmed 失败" || return 1
         done
         print_status "SUCCESS" "已将 $new_user 添加到额外群组: $extra_groups"
     fi
@@ -1102,12 +1099,21 @@ create_custom_user() {
     if prompt_user "是否为 $new_user 添加 SSH 公钥?"; then
         read -rp "$(echo -e "${WHITE}[?]${NC} 请粘贴 SSH 公钥（单行）: ")" user_pubkey
         if [[ -n "$user_pubkey" ]]; then
-            sudo -u "$new_user" mkdir -p "/home/$new_user/.ssh"
-            echo "$user_pubkey" | sudo -u "$new_user" tee -a "/home/$new_user/.ssh/authorized_keys" >/dev/null
-            sudo chmod 700 "/home/$new_user/.ssh"
-            sudo chmod 600 "/home/$new_user/.ssh/authorized_keys"
-            sudo chown -R "$new_user":"$new_user" "/home/$new_user/.ssh"
-            print_status "SUCCESS" "SSH 公钥已添加到 /home/$new_user/.ssh/authorized_keys"
+            if ! validate_ssh_public_key "$user_pubkey"; then
+                print_status "ERROR" "无效或不支持的 SSH 公钥"
+                return 1
+            fi
+            local ssh_dir="$new_user_home/.ssh"
+            local auth_keys="$ssh_dir/authorized_keys"
+            if ! sudo -u "$new_user" mkdir -p "$ssh_dir" ||
+               ! echo "$user_pubkey" | sudo -u "$new_user" tee -a "$auth_keys" >/dev/null ||
+               ! sudo chmod 700 "$ssh_dir" ||
+               ! sudo chmod 600 "$auth_keys" ||
+               ! sudo chown -R "$new_user":"$new_user_group" "$ssh_dir"; then
+                print_status "ERROR" "SSH 公钥配置失败"
+                return 1
+            fi
+            print_status "SUCCESS" "SSH 公钥已添加到 $auth_keys"
         else
             print_status "WARNING" "未提供公钥，跳过"
         fi
@@ -1121,7 +1127,7 @@ enable_journald_persistence() {
     print_status "PROGRESS" "配置 systemd-journald 持久化日志"
 
     local journald_dropin_dir="/etc/systemd/journald.conf.d"
-    local journald_persistent_conf="$journald_dropin_dir/10-persistent.conf"
+    local journald_persistent_conf="$journald_dropin_dir/80-persistent.conf"
 
     if ! sudo mkdir -p "$journald_dropin_dir"; then
         print_status "ERROR" "创建 journald 配置目录失败: $journald_dropin_dir"
@@ -1168,10 +1174,12 @@ EOF
     local missing_setting=0
     local setting
     for setting in "${required_journald_settings[@]}"; do
-        if grep -Eq "^[[:space:]]*${setting%%=*}[[:space:]]*=[[:space:]]*${setting#*=}[[:space:]]*$" <<< "$loaded_journald_config"; then
-            print_status "SUCCESS" "配置已读取: $setting"
+        local effective_value
+        effective_value=$(get_journald_setting "${setting%%=*}" <<< "$loaded_journald_config")
+        if [[ "$effective_value" == "${setting#*=}" ]]; then
+            print_status "SUCCESS" "配置已生效: $setting"
         else
-            print_status "ERROR" "配置未读取: $setting"
+            print_status "ERROR" "配置未生效: $setting（当前: ${effective_value:-未设置}）"
             missing_setting=1
         fi
     done
@@ -1203,9 +1211,7 @@ EOF
 # 显示菜单
 show_menu() {
     clear
-    echo -e "${WHITE}==================================${NC}"
-    echo -e "${WHITE}  Rocky Linux 系统初始化脚本   ${NC}"
-    echo -e "${WHITE}==================================${NC}"
+    echo -e "${WHITE}=== ${PRETTY_NAME:-Enterprise Linux} 初始化脚本 ===${NC}"
     
     local menu_items=(
         "设置代理"
@@ -1220,7 +1226,7 @@ show_menu() {
         "创建 Swap"
         "设置自动安全更新"
         "配置 AIDE"
-        "系统安全审计"
+        "Lynis 安全审计"
         "安装 Docker"
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
@@ -1292,7 +1298,7 @@ main() {
             10) run_menu_item "10" "创建 Swap" configure_swap ;;
             11) run_menu_item "11" "设置自动安全更新" setup_auto_updates ;;
             12) run_menu_item "12" "配置 AIDE" configure_aide ;;
-            13) run_menu_item "13" "系统安全审计" security_audit ;;
+            13) run_menu_item "13" "Lynis 安全审计" run_lynis_audit ;;
             14) run_menu_item "14" "安装 Docker" install_docker ;;
             15) run_menu_item "15" "配置 SSH 公钥" configure_ssh_keys ;;
             16) run_menu_item "16" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;

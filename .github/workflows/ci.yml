@@ -24,13 +24,13 @@ jobs:
       - name: Bash syntax check
         run: |
           set -euxo pipefail
-          bash -n rocky.sh
+          bash -n el.sh
           bash -n alpine.sh
 
       - name: ShellCheck static analysis
         run: |
           set -euxo pipefail
-          shellcheck -x rocky.sh alpine.sh
+          shellcheck -x el.sh alpine.sh
 
   el-smoke:
     name: ${{ matrix.name }} smoke
@@ -74,18 +74,18 @@ jobs:
       - name: Check OS support
         run: |
           set -euxo pipefail
-          bash ./rocky.sh check_os
+          bash ./el.sh check_os
 
       - name: Render menu
         run: |
           set -euxo pipefail
-          TERM=xterm bash ./rocky.sh show_menu > /tmp/rocky-menu
-          grep -q "19. 系统检查" /tmp/rocky-menu
+          TERM=xterm bash ./el.sh show_menu > /tmp/el-menu
+          grep -q "19. 系统检查" /tmp/el-menu
 
       - name: Run pre_check
         run: |
           set -euxo pipefail
-          bash ./rocky.sh pre_check
+          bash ./el.sh pre_check
 
   alpine-smoke:
     name: Alpine ${{ matrix.version }} smoke
