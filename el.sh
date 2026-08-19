@@ -179,9 +179,11 @@ check_os() {
 prompt_user() {
     local prompt="$1"
     local default="${2:-Y}"
+    local choices="Y/n"
+    [[ "${default^^}" == "N" ]] && choices="y/N"
     
     while true; do
-        read -rp "$(echo -e "${WHITE}[?]${NC} $prompt (${default,,}/n): ")" response
+        read -rp "$(echo -e "${WHITE}[?]${NC} $prompt ($choices): ")" response
         response=${response:-$default}
         case "${response,,}" in
             y|yes) return 0 ;;
@@ -194,35 +196,63 @@ prompt_user() {
 # 检查端口是否被占用
 check_port() {
     local port=$1
-    ss -tuln | grep -q ":$port "
+    ss -H -ltn | awk -v port="$port" '$4 ~ (":" port "$") { found=1 } END { exit !found }'
 }
 
 # 配置防火墙端口
 configure_firewall_port() {
-    local port=$1
+    local action=$1
+    local port=$2
 
-    if command -v firewall-cmd &>/dev/null; then
-        print_status "PROGRESS" "配置防火墙端口 $port"
-        local -a zones=()
-        local zone
-        mapfile -t zones < <(sudo firewall-cmd --get-active-zones 2>/dev/null | awk '/^[^[:space:]]/ {print $1}')
-        if (( ${#zones[@]} == 0 )); then
-            print_status "ERROR" "未检测到活动防火墙 zone"
-            return 1
-        fi
-        for zone in "${zones[@]}"; do
-            if ! sudo firewall-cmd --zone="$zone" --add-port="$port"/tcp &>/dev/null || \
-               ! sudo firewall-cmd --zone="$zone" --add-port="$port"/tcp --permanent &>/dev/null; then
-                print_status "ERROR" "防火墙 zone $zone 配置失败"
-                return 1
-            fi
-        done
-        print_status "SUCCESS" "端口 $port 已在活动 zone (${zones[*]}) 开放"
-        return 0
-    else
-        print_status "ERROR" "未检测到防火墙服务，无法保证新端口可用"
+    if ! command -v firewall-cmd &>/dev/null || ! sudo firewall-cmd --state &>/dev/null; then
+        print_status "ERROR" "firewalld 未安装或未运行"
         return 1
     fi
+
+    local -a zones=()
+    local -a scope_args=()
+    local zone
+    local scope
+    local failed=0
+
+    if [[ "$action" == add ]]; then
+        mapfile -t zones < <(sudo firewall-cmd --get-active-zones 2>/dev/null | awk '/^[^[:space:]]/ {print $1}')
+    else
+        read -ra zones <<< "$(sudo firewall-cmd --get-zones 2>/dev/null)"
+    fi
+    if (( ${#zones[@]} == 0 )); then
+        print_status "ERROR" "未检测到 firewalld zone"
+        return 1
+    fi
+
+    for scope in runtime permanent; do
+        scope_args=()
+        [[ "$scope" == permanent ]] && scope_args=(--permanent)
+        for zone in "${zones[@]}"; do
+            if [[ "$action" == add ]]; then
+                sudo firewall-cmd "${scope_args[@]}" --zone="$zone" --query-port="$port"/tcp &>/dev/null ||
+                    sudo firewall-cmd "${scope_args[@]}" --zone="$zone" --add-port="$port"/tcp &>/dev/null || failed=1
+            else
+                if sudo firewall-cmd "${scope_args[@]}" --zone="$zone" --query-port="$port"/tcp &>/dev/null &&
+                    ! sudo firewall-cmd "${scope_args[@]}" --zone="$zone" --remove-port="$port"/tcp &>/dev/null; then
+                    failed=1
+                fi
+                if [[ "$port" == 22 ]] && \
+                    sudo firewall-cmd "${scope_args[@]}" --zone="$zone" --query-service=ssh &>/dev/null &&
+                    ! sudo firewall-cmd "${scope_args[@]}" --zone="$zone" --remove-service=ssh &>/dev/null; then
+                    failed=1
+                fi
+            fi
+        done
+    done
+
+    if [[ $failed -ne 0 ]]; then
+        print_status "ERROR" "防火墙端口操作失败: $port/tcp"
+        return 1
+    fi
+    [[ "$action" == add ]] &&
+        print_status "SUCCESS" "SSH 防火墙端口已开放: $port/tcp" ||
+        print_status "SUCCESS" "旧 SSH 防火墙规则已清理: $port/tcp"
 }
 
 get_journald_setting() {
@@ -382,7 +412,7 @@ disable_selinux() {
     echo -e "    • 移除重要的安全边界"
     echo -e "${RED}========================${NC}\n"
     
-    if ! prompt_user "确认要关闭 SELinux 吗？"; then
+    if ! prompt_user "确认要关闭 SELinux 吗？" "N"; then
         print_status "SKIP" "SELinux 保持当前状态"
         return 77
     fi
@@ -401,129 +431,123 @@ disable_selinux() {
 
 # 5. 配置 SSH
 configure_ssh() {
-    print_status "PROGRESS" "配置 SSH 安全设置"
-    
-    # 获取用户输入的SSH端口
-    local ssh_port=""
+    print_status "PROGRESS" "配置 SSH 端口"
+
+    local ssh_config="/etc/ssh/sshd_config"
+    if ! sudo test -r "$ssh_config"; then
+        print_status "ERROR" "无法读取 $ssh_config"
+        return 1
+    fi
+
+    local -a old_ssh_ports=()
+    mapfile -t old_ssh_ports < <(
+        sudo sshd -T -f "$ssh_config" 2>/dev/null |
+            awk '$1 == "port" && !seen[$2]++ { print $2 }'
+    )
+    if (( ${#old_ssh_ports[@]} == 0 )); then
+        print_status "ERROR" "无法确定当前 SSH 端口"
+        return 1
+    fi
+
+    local ssh_port
+    local old_ssh_port
+    local port_is_current
     while true; do
         read -rp "$(echo -e "${WHITE}[?]${NC} SSH 端口号 (22-65535，默认 2222): ")" ssh_port
         ssh_port=${ssh_port:-2222}
-        
-        # 验证端口号
+
         if [[ ! "$ssh_port" =~ ^[0-9]+$ ]] || [[ $ssh_port -lt 22 ]] || [[ $ssh_port -gt 65535 ]]; then
             print_status "ERROR" "端口号无效，请输入 22-65535 之间的数字"
             continue
         fi
-        
-        # 检查端口占用
-        if check_port "$ssh_port"; then
-            print_status "WARNING" "端口 $ssh_port 已被占用"
-            if ! prompt_user "是否继续使用此端口"; then
-                continue
-            fi
+
+        port_is_current=false
+        for old_ssh_port in "${old_ssh_ports[@]}"; do
+            [[ "$old_ssh_port" == "$ssh_port" ]] && port_is_current=true
+        done
+        if [[ "$port_is_current" == false ]] && check_port "$ssh_port"; then
+            print_status "ERROR" "端口 $ssh_port 已被占用"
+            continue
         fi
-        
         break
     done
-    
-    print_status "INFO" "使用 SSH 端口: $ssh_port"
-    
-    # 安装必要组件
-    sudo dnf install -y policycoreutils-python-utils
-    check_result $? "" "SELinux 工具安装失败"
-    
-    # 备份配置
-    local ssh_config="/etc/ssh/sshd_config"
+
     local ssh_config_backup
-    ssh_config_backup="/etc/ssh/sshd_config.bak.$(date +%Y%m%d%H%M%S)"
-    if ! sudo cp "$ssh_config" "$ssh_config_backup"; then
-        print_status "ERROR" "sshd_config 备份失败，已终止"
+    ssh_config_backup="${ssh_config}.bak.$(date +%Y%m%d%H%M%S)"
+    if ! sudo cp -a "$ssh_config" "$ssh_config_backup"; then
+        print_status "ERROR" "SSH 配置备份失败"
         return 1
     fi
-    
-    # SELinux 端口配置
-    if [[ "$(getenforce 2>/dev/null)" == "Enforcing" ]]; then
+
+    if ! sudo sed -Ei \
+        -e "1iPort $ssh_port" \
+        -e '0,/^[[:space:]]*Match([[:space:]]|$)/I{/^[[:space:]]*Port[[:space:]]+/Id;}' \
+        "$ssh_config"; then
+        sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        print_status "ERROR" "SSH 端口写入失败，已回滚"
+        return 1
+    fi
+
+    if ! sudo sshd -t -f "$ssh_config" &>/dev/null; then
+        sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        print_status "ERROR" "新 SSH 配置校验失败，已回滚"
+        return 1
+    fi
+
+    local -a new_ssh_ports=()
+    mapfile -t new_ssh_ports < <(
+        sudo sshd -T -f "$ssh_config" 2>/dev/null |
+            awk '$1 == "port" && !seen[$2]++ { print $2 }'
+    )
+    if (( ${#new_ssh_ports[@]} != 1 )) || [[ "${new_ssh_ports[0]}" != "$ssh_port" ]]; then
+        sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        print_status "ERROR" "新 SSH 端口未正确生效，已回滚"
+        return 1
+    fi
+
+    local selinux_state
+    selinux_state=$(getenforce 2>/dev/null || echo Disabled)
+    if [[ "$selinux_state" != Disabled && "$ssh_port" != 22 ]]; then
         if ! command -v semanage &>/dev/null; then
-            print_status "ERROR" "未找到 semanage，无法配置 SELinux 端口"
-            return 1
+            sudo dnf install -y policycoreutils-python-utils
+            if ! check_result $? "SELinux 管理工具已安装" "SELinux 管理工具安装失败"; then
+                sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+                return 1
+            fi
         fi
-        if sudo semanage port -l 2>/dev/null | grep -qE "^ssh_port_t.*\\b${ssh_port}\\b"; then
-            print_status "INFO" "SELinux 端口策略已存在: $ssh_port"
-        else
-            if sudo semanage port -a -t ssh_port_t -p tcp "$ssh_port" &>/dev/null; then
-                print_status "SUCCESS" "SELinux 端口策略已配置"
-            else
-                print_status "ERROR" "SELinux 端口策略配置失败"
+        if ! sudo semanage port -l 2>/dev/null | grep -qE "^ssh_port_t[[:space:]]+tcp.*\\b${ssh_port}\\b"; then
+            if ! sudo semanage port -a -t ssh_port_t -p tcp "$ssh_port" &>/dev/null; then
+                sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+                print_status "ERROR" "SELinux SSH 端口策略配置失败"
                 return 1
             fi
         fi
     fi
-    
-    # 让用户选择是否禁止 root 登录
-    local permit_root_choice=""
-    if prompt_user "是否禁止 root 通过 SSH 登录（推荐）? 提示：如果系统上没有第二个可登录用户，禁止 root 登录 会导致无法远程进入 (风险很大)"; then
-        permit_root_choice="no"
-    fi
 
-    # 防火墙放行（失败则不改 sshd_config）
-    if ! configure_firewall_port "$ssh_port"; then
-        print_status "ERROR" "防火墙端口配置失败，已终止 SSH 端口变更"
+    if ! configure_firewall_port add "$ssh_port"; then
+        sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        print_status "ERROR" "新 SSH 端口未能完整放行，配置已回滚"
         return 1
     fi
 
-    # ssh 配置更新 (确保对现有配置行做替换/追加)
-    # Port
-    if sudo grep -q -E '^Port ' "$ssh_config"; then
-        sudo sed -i -E "s/^#?Port .*/Port $ssh_port/" "$ssh_config"
-    else
-        echo "Port $ssh_port" | sudo tee -a "$ssh_config" >/dev/null
-    fi
-    # PermitEmptyPasswords
-    if sudo grep -q -E '^PermitEmptyPasswords ' "$ssh_config"; then
-        sudo sed -i -E 's/^#?PermitEmptyPasswords .*/PermitEmptyPasswords no/' "$ssh_config"
-    else
-        echo "PermitEmptyPasswords no" | sudo tee -a "$ssh_config" >/dev/null
-    fi
-    # PermitRootLogin 根据选择设置
-    if [[ "$permit_root_choice" == "no" ]]; then
-        if sudo grep -q -E '^PermitRootLogin ' "$ssh_config"; then
-            sudo sed -i -E 's/^#?PermitRootLogin .*/PermitRootLogin no/' "$ssh_config"
-        else
-            echo "PermitRootLogin no" | sudo tee -a "$ssh_config" >/dev/null
-        fi
-        print_status "INFO" "已设置 PermitRootLogin no（禁止 root 登录）"
-    else
-        print_status "INFO" "未修改 PermitRootLogin"
-    fi
-
-    # 其余连接控制配置
-    if sudo grep -q -E '^ClientAliveInterval ' "$ssh_config"; then
-        sudo sed -i -E 's/^#?ClientAliveInterval .*/ClientAliveInterval 30/' "$ssh_config"
-    else
-        echo "ClientAliveInterval 30" | sudo tee -a "$ssh_config" >/dev/null
-    fi
-    if sudo grep -q -E '^ClientAliveCountMax ' "$ssh_config"; then
-        sudo sed -i -E 's/^#?ClientAliveCountMax .*/ClientAliveCountMax 2/' "$ssh_config"
-    else
-        echo "ClientAliveCountMax 2" | sudo tee -a "$ssh_config" >/dev/null
-    fi
-
-    # 重启前校验配置
-    if ! sudo sshd -t -f "$ssh_config" &>/dev/null; then
-        print_status "ERROR" "sshd_config 校验失败，已回滚"
-        sudo cp "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+    if ! sudo systemctl reload sshd &>/dev/null || ! check_port "$ssh_port"; then
+        sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
+        sudo systemctl reload sshd &>/dev/null || true
+        print_status "ERROR" "SSH 未能在新端口监听，配置已回滚"
         return 1
     fi
 
-    # 重启 SSH 服务
-    if sudo systemctl restart sshd &>/dev/null; then
-        print_status "SUCCESS" "SSH 配置完成，端口: $ssh_port"
-    else
-        print_status "ERROR" "SSH 服务重启失败，尝试回滚配置"
-        sudo cp "$ssh_config_backup" "$ssh_config" &>/dev/null || true
-        sudo systemctl restart sshd &>/dev/null || true
+    local firewall_cleanup_failed=0
+    for old_ssh_port in "${old_ssh_ports[@]}"; do
+        [[ "$old_ssh_port" == "$ssh_port" ]] && continue
+        configure_firewall_port remove "$old_ssh_port" || firewall_cleanup_failed=1
+    done
+    if [[ $firewall_cleanup_failed -ne 0 ]]; then
+        print_status "ERROR" "SSH 已切换到端口 $ssh_port，但旧防火墙规则清理不完整"
         return 1
     fi
+
+    print_status "SUCCESS" "SSH 配置完成，端口: $ssh_port，备份: $ssh_config_backup"
 }
 
 # 6. 安装基础软件包

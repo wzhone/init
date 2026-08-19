@@ -30,7 +30,7 @@ bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/alpine.sh)
 
 EL 版：
 - 基础系统：主机名、代理、NTS 时间同步（chrony）、TCP BBR、Swap、journald 持久化日志
-- 安全加固：SSH 端口/空密码/可选禁 root、AIDE、自动更新
+- 安全与维护：SSH 端口迁移、AIDE、自动更新
 - 开发环境：基础工具包、Zsh + Oh My Zsh + 主题/插件 + FZF
 - 审计与可视：Lynis 安全审计、SSH 主机指纹、执行日志
 - 其他：Docker CE、SSH 公钥、用户创建
@@ -50,7 +50,7 @@ EL 版（`el.sh`）：
 2. 修改主机名
 3. SELinux（含风险提示）
 4. 创建自定义用户
-5. SSH（端口、root 登录可选）
+5. SSH 端口迁移
 6. 基础软件包
 7. Zsh 工具链（Oh My Zsh / 主题 / 插件 / FZF）
 8. NTS 时间同步（chrony）
@@ -98,8 +98,7 @@ Alpine 版（`alpine.sh`）：
 
 ## 安全提示
 
-- SSH 禁 root / 禁密码登录前，先准备好公钥和可登录用户，避免断连。
-- EL 修改 SSH 端口前会尝试放行防火墙/SELinux 端口，失败会中止变更；建议确认 firewalld 可用。
+- EL 修改 SSH 端口前会放行防火墙/SELinux 新端口，切换成功后清理旧防火墙规则；建议确认 firewalld 可用。
 - 禁用 SELinux 会削弱系统安全边界，生产环境慎用。
 
 
