@@ -250,9 +250,11 @@ configure_firewall_port() {
         print_status "ERROR" "防火墙端口操作失败: $port/tcp"
         return 1
     fi
-    [[ "$action" == add ]] &&
-        print_status "SUCCESS" "SSH 防火墙端口已开放: $port/tcp" ||
+    if [[ "$action" == add ]]; then
+        print_status "SUCCESS" "SSH 防火墙端口已开放: $port/tcp"
+    else
         print_status "SUCCESS" "旧 SSH 防火墙规则已清理: $port/tcp"
+    fi
 }
 
 get_journald_setting() {
