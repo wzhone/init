@@ -16,13 +16,13 @@
 
 EL 系：
 ```bash
-bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/el.sh)
+bash <(curl -s https://raw.githubusercontent.com/wzhone/init/main/el.sh)
 ```
 
 Alpine Linux：
 ```bash
 apk add --no-cache bash curl
-bash <(curl -s https://raw.githubusercontent.com/wzhone/init/master/alpine.sh)
+bash <(curl -s https://raw.githubusercontent.com/wzhone/init/main/alpine.sh)
 ```
 
 

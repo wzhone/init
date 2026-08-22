@@ -532,7 +532,18 @@ configure_ssh() {
         return 1
     fi
 
-    if ! sudo systemctl reload sshd &>/dev/null || ! check_port "$ssh_port"; then
+    local ssh_ready=false
+    local attempt
+    if sudo systemctl reload sshd &>/dev/null; then
+        for (( attempt = 0; attempt < 10; attempt++ )); do
+            sleep 0.5
+            if check_port "$ssh_port"; then
+                ssh_ready=true
+                break
+            fi
+        done
+    fi
+    if [[ "$ssh_ready" == false ]]; then
         sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
         sudo systemctl reload sshd &>/dev/null || true
         print_status "ERROR" "SSH 未能在新端口监听，配置已回滚"
