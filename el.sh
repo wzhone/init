@@ -550,6 +550,11 @@ configure_ssh() {
     fi
 
     print_status "SUCCESS" "SSH 配置完成，端口: $ssh_port，备份: $ssh_config_backup"
+    print_status "WARNING" "确认公钥登录可用后，请手动设置："
+    print_status "INFO" "PermitRootLogin no"
+    print_status "INFO" "PasswordAuthentication no"
+    print_status "INFO" "KbdInteractiveAuthentication no"
+    print_status "INFO" "PermitEmptyPasswords no"
 }
 
 # 6. 安装基础软件包
