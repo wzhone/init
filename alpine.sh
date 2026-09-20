@@ -140,8 +140,14 @@ check_os() {
         exit 1
     fi
     . /etc/os-release
-    if [[ "$ID" != "alpine" ]]; then
+    if [[ "$ID" != alpine && " ${ID_LIKE:-} " != *" alpine "* ]]; then
         print_status "ERROR" "当前系统不是 Alpine Linux（检测到: $PRETTY_NAME）。"
+        exit 1
+    fi
+    local alpine_version
+    alpine_version=$(cat /etc/alpine-release 2>/dev/null || printf '%s' "$VERSION_ID")
+    if [[ ! "$alpine_version" =~ ^3\.(23|24)(\.[0-9]+)?$ ]]; then
+        print_status "ERROR" "仅支持 Alpine 3.23/3.24 稳定版，当前系统: $PRETTY_NAME"
         exit 1
     fi
     print_status "SUCCESS" "检测到 Alpine Linux：$PRETTY_NAME"
@@ -478,38 +484,74 @@ EOF
     fi
 }
 
-# ========== 8) 创建 Swap ==========
+# ========== 8) 配置 Swap ==========
 configure_swap() {
     print_status "PROGRESS" "配置 Swap"
+    swapon --show 2>/dev/null || cat /proc/swaps
 
-    if awk 'NR > 1 {found=1} END {exit found ? 0 : 1}' /proc/swaps 2>/dev/null; then
-        print_status "SUCCESS" "检测到已有 Swap，跳过创建"
-        swapon --show 2>/dev/null || cat /proc/swaps
-        return 0
-    fi
+    local swap_type swap_size_mb default_size_mb=4096
+    while true; do
+        read -rp "[?] 类型：1) 磁盘文件 2) zram 0) 跳过（默认 1）: " swap_type || return 77
+        swap_type=${swap_type:-1}
+        case "$swap_type" in
+            1) break ;;
+            2)
+                default_size_mb=$(awk '/MemTotal/ {n=int($2/2048); print n<4096 ? n : 4096}' /proc/meminfo)
+                break ;;
+            0) return 77 ;;
+            *) print_status "WARNING" "请输入 0、1 或 2" ;;
+        esac
+    done
+    while true; do
+        read -rp "[?] 大小（MiB，1024 MiB = 1 GiB，默认 $default_size_mb）: " swap_size_mb || return 77
+        swap_size_mb=${swap_size_mb:-$default_size_mb}
+        [[ "$swap_size_mb" =~ ^[1-9][0-9]*$ ]] && break
+        print_status "WARNING" "请输入正整数 MiB，例如 512、2048 或 4096"
+    done
 
     if ! command -v mkswap >/dev/null 2>&1 || ! command -v swapon >/dev/null 2>&1; then
-        apk add --no-cache util-linux >/dev/null 2>&1 || true
+        apk add --no-cache util-linux || return 1
     fi
     if ! command -v mkswap >/dev/null 2>&1 || ! command -v swapon >/dev/null 2>&1; then
         print_status "ERROR" "缺少 mkswap/swapon，无法创建 Swap"
         return 1
     fi
 
-    local swap_size_gb
-    while true; do
-        read -rp "[?] Swap 大小（单位 G，默认 4）: " swap_size_gb
-        swap_size_gb=${swap_size_gb:-4}
-        if [[ "$swap_size_gb" =~ ^[1-9][0-9]*$ ]]; then
-            break
+    if [[ "$swap_type" == 2 ]]; then
+        apk add --no-cache zram-init zram-init-openrc || return 1
+        if [[ -n "$(zramctl --noheadings)" ]]; then
+            print_status "SKIP" "已有 zram 设备，保留当前配置；调整大小前请先停用对应设备"
+            return 77
         fi
-        print_status "WARNING" "请输入正整数，例如 2 或 4"
-    done
+        cp -a /etc/conf.d/zram-init "/etc/conf.d/zram-init.bak.$(date +%Y%m%d%H%M%S)" || return 1
+        cat > /etc/conf.d/zram-init <<EOF
+load_on_start=yes
+unload_on_stop=yes
+num_devices=1
+type0=swap
+size0=$swap_size_mb
+flag0=100
+EOF
+        check_result $? "zram 配置已写入" "zram 配置写入失败" || return 1
+        rc-update add zram-init boot && rc-service zram-init start
+        check_result $? "" "zram 启动失败" || return 1
+        if ! awk '$1=="/dev/zram0" {found=1} END {exit !found}' /proc/swaps; then
+            print_status "ERROR" "未检测到已启用的 zram Swap"
+            return 1
+        fi
+        print_status "SUCCESS" "zram 已启用并配置开机启动: ${swap_size_mb} MiB，优先级 100"
+        return 0
+    fi
 
     local swap_file="/swapfile"
+    if [[ -L "$swap_file" ]] || { [[ -e "$swap_file" ]] && [[ ! -f "$swap_file" ]]; }; then
+        print_status "ERROR" "$swap_file 不是普通文件，拒绝覆盖"
+        return 1
+    fi
     if [[ -e "$swap_file" ]]; then
         print_status "WARNING" "$swap_file 已存在"
-        read -r -p "[?] 是否删除后重新创建？[y/N]: " ans
+        local ans
+        read -r -p "[?] 是否删除后按新大小创建？[y/N]: " ans || return 77
         case "$ans" in
             y|Y) ;;
             *)
@@ -517,20 +559,24 @@ configure_swap() {
                 return 77
                 ;;
         esac
-        swapoff "$swap_file" 2>/dev/null || true
+        if awk -v file="$swap_file" '$1==file {found=1} END {exit !found}' /proc/swaps &&
+            ! swapoff "$swap_file"; then
+            print_status "ERROR" "无法停用现有 Swap，保留原文件"
+            return 1
+        fi
         if ! rm -f "$swap_file"; then
             print_status "ERROR" "删除旧 swapfile 失败: $swap_file"
             return 1
         fi
     fi
 
-    print_status "PROGRESS" "创建 ${swap_size_gb}G swapfile"
+    print_status "PROGRESS" "创建 ${swap_size_mb} MiB swapfile"
     if ! {
         if command -v fallocate >/dev/null 2>&1; then
-            fallocate -l "${swap_size_gb}G" "$swap_file" 2>/dev/null || \
-                dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+            fallocate -l "${swap_size_mb}M" "$swap_file" 2>/dev/null || \
+                dd if=/dev/zero of="$swap_file" bs=1M count="$swap_size_mb"
         else
-            dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+            dd if=/dev/zero of="$swap_file" bs=1M count="$swap_size_mb"
         fi
     }; then
         print_status "ERROR" "swapfile 创建失败"
@@ -557,37 +603,87 @@ configure_swap() {
     fi
 
     local fstab_entry="/swapfile none swap sw 0 0"
-    if ! grep -Eq '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]+sw[[:space:]]+0[[:space:]]+0' /etc/fstab; then
-        echo "$fstab_entry" >> /etc/fstab
+    if ! awk -v file="$swap_file" '$1==file && $3=="swap" {found=1} END {exit !found}' /etc/fstab; then
+        if ! echo "$fstab_entry" >> /etc/fstab; then
+            print_status "ERROR" "Swap 持久化配置写入失败"
+            if swapoff "$swap_file"; then
+                rm -f "$swap_file"
+            fi
+            return 1
+        fi
     fi
 
-    print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_gb}G"
+    rc-update add swap boot || return 1
+    print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_mb} MiB"
     swapon --show 2>/dev/null || cat /proc/swaps
 }
 
-# ========== 9) 设置自动安全更新 ==========
+# ========== 9) 设置自动更新 ==========
 setup_auto_updates() {
-    print_status "PROGRESS" "创建 /etc/periodic/daily/apk-auto-upgrade 并启用 crond"
-    local update_script_path="/etc/periodic/daily/apk-auto-upgrade"
-    local expected_content
-    expected_content=$'#!/bin/sh\napk -U update\napk upgrade --available'
+    print_status "INFO" "自动更新当前稳定分支的全部软件包（非仅安全补丁），排除 edge 和其他版本仓库"
+    local update_time
+    while true; do
+        read -rp "[?] 每日更新时间（本机时区，HH:MM，默认 03:00）: " update_time || return 77
+        update_time=${update_time:-03:00}
+        [[ "$update_time" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] && break
+        print_status "WARNING" "请输入有效时间，例如 03:00"
+    done
 
-    if [[ -f "$update_script_path" ]] && cmp -s <(echo "$expected_content") "$update_script_path"; then
-        print_status "INFO" "自动更新脚本已存在，跳过创建。"
-    else
-        print_status "PROGRESS" "创建或更新 $update_script_path..."
-        cat > "$update_script_path" <<'EOF'
+    local update_script_path="/usr/local/sbin/init-apk-upgrade"
+    mkdir -p /usr/local/sbin || return 1
+    if ! cat > "$update_script_path" <<'EOF'
 #!/bin/sh
-apk -U update
-apk upgrade --available
+set -eu
+umask 077
+repositories=$(mktemp)
+trap 'rm -f "$repositories"' EXIT
+branch="/v$(cut -d. -f1,2 /etc/alpine-release)/"
+awk -v branch="$branch" '
+    $1 !~ /^#/ {
+        url = ($1 ~ /^@/) ? $2 : $1
+        if (url ~ /^https?:\/\// && index(url, branch) && url ~ /\/(main|community)\/?$/) {
+            if ($1 ~ /^@/) print $1, url
+            else print url
+        }
+    }
+' /etc/apk/repositories > "$repositories"
+if [ ! -s "$repositories" ]; then
+    logger -p daemon.err -t init-apk-upgrade "No repositories for the current stable branch; update skipped"
+    exit 1
+fi
+if apk --repositories-file "$repositories" --wait 60 update &&
+   apk --repositories-file "$repositories" --wait 60 upgrade; then
+    logger -t init-apk-upgrade "Stable branch update completed; see /var/log/apk.log"
+else
+    logger -p daemon.err -t init-apk-upgrade "Update failed; inspect apk output and /var/log/apk.log"
+    exit 1
+fi
 EOF
-        chmod +x "$update_script_path"
-        check_result $? "自动更新脚本已创建" "自动更新脚本创建失败" || return 1
+    then
+        print_status "ERROR" "自动更新脚本写入失败"
+        return 1
     fi
+    chmod 700 "$update_script_path" || return 1
 
-    rc-update add crond >/dev/null 2>&1 || true
-    rc-service crond start >/dev/null 2>&1 || true
-    print_status "SUCCESS" "已启用每日自动升级（crond + /etc/periodic/daily）"
+    local cron_file
+    cron_file=$(mktemp) || return 1
+    if [[ -f /etc/crontabs/root ]]; then
+        cp -a /etc/crontabs/root "/etc/crontabs/root.bak.$(date +%Y%m%d%H%M%S)" || { rm -f "$cron_file"; return 1; }
+        sed '\|# init-apk-upgrade$|d' /etc/crontabs/root > "$cron_file" || { rm -f "$cron_file"; return 1; }
+    fi
+    printf '%d %d * * * %s # init-apk-upgrade\n' \
+        "$((10#${update_time#*:}))" "$((10#${update_time%:*}))" "$update_script_path" >> "$cron_file" || { rm -f "$cron_file"; return 1; }
+    if ! crontab -u root "$cron_file"; then
+        rm -f "$cron_file"
+        print_status "ERROR" "自动更新计划安装失败"
+        return 1
+    fi
+    rm -f "$cron_file"
+    if [[ -f /etc/periodic/daily/apk-auto-upgrade ]]; then
+        mv /etc/periodic/daily/apk-auto-upgrade "/root/apk-auto-upgrade.bak.$(date +%Y%m%d%H%M%S)" || return 1
+    fi
+    rc-update add crond default && rc-service crond start
+    check_result $? "每日 $update_time 自动更新已启用；包变更记录在 /var/log/apk.log" "crond 启用失败"
 }
 
 # ========== 10) 安装 Docker==========
@@ -816,7 +912,7 @@ pre_check() {
     print_status "INFO" "Swap: ${swap_total_mb:-未知}MB"
 
     local service
-    for service in sshd chronyd docker crond; do
+    for service in sshd chronyd docker crond zram-init; do
         if rc-service "$service" status >/dev/null 2>&1; then
             print_status "SUCCESS" "$service: started"
         elif [[ -x "/etc/init.d/$service" ]]; then
@@ -834,10 +930,11 @@ pre_check() {
         print_status "INFO" "BBR: 当前拥塞控制为 ${current_congestion_control:-未知}"
     fi
 
-    if [[ -f /etc/periodic/daily/apk-auto-upgrade ]]; then
-        print_status "SUCCESS" "自动更新: 已配置 /etc/periodic/daily/apk-auto-upgrade"
+    if [[ -x /usr/local/sbin/init-apk-upgrade ]] &&
+        crontab -u root -l 2>/dev/null | grep -q '# init-apk-upgrade$'; then
+        print_status "SUCCESS" "自动更新: 已配置当前稳定分支全部包更新"
     else
-        print_status "INFO" "自动更新: 未检测到 daily apk-auto-upgrade"
+        print_status "INFO" "自动更新: 未检测到稳定分支更新计划"
     fi
 
     if [[ -f /etc/timezone ]]; then
@@ -863,8 +960,8 @@ show_menu() {
         "安装基础软件包"
         "同步系统时间"
         "启用 TCP BBR"
-        "创建 Swap"
-        "设置自动安全更新"
+        "配置 Swap（文件 / zram）"
+        "设置自动更新"
         "安装 Docker"
         "配置 SSH 公钥"
         "显示 SSH 主机密钥指纹"
@@ -908,8 +1005,8 @@ main() {
             5) run_menu_item "5" "安装基础软件包" install_basic_packages ;;
             6) run_menu_item "6" "同步系统时间" sync_system_time ;;
             7) run_menu_item "7" "启用 TCP BBR" enable_bbr ;;
-            8) run_menu_item "8" "创建 Swap" configure_swap ;;
-            9) run_menu_item "9" "设置自动安全更新" setup_auto_updates ;;
+            8) run_menu_item "8" "配置 Swap" configure_swap ;;
+            9) run_menu_item "9" "设置自动更新" setup_auto_updates ;;
             10) run_menu_item "10" "安装 Docker" install_docker ;;
             11) run_menu_item "11" "配置 SSH 公钥" configure_ssh_keys ;;
             12) run_menu_item "12" "显示 SSH 主机密钥指纹" show_ssh_fingerprints ;;
@@ -938,7 +1035,10 @@ main() {
 }
 
 if [[ $# -gt 0 ]]; then
-    "$@"
+    check_os
+    if [[ "$1" != "check_os" ]]; then
+        "$@"
+    fi
 else
     main
 fi

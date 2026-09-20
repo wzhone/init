@@ -145,34 +145,68 @@ check_os() {
     
     source /etc/os-release
 
-    local version_major="${VERSION_ID%%.*}"
     local pretty_name="${PRETTY_NAME:-$ID $VERSION_ID}"
-    case "$ID" in
-        rocky|almalinux)
-            if [[ ! "$version_major" =~ ^(8|9|10)$ ]]; then
-                print_status "ERROR" "不支持的系统版本: $pretty_name"
-                exit 1
-            fi
-            ;;
-        ol)
-            if [[ ! "$version_major" =~ ^(8|9)$ ]]; then
-                print_status "ERROR" "不支持的系统版本: $pretty_name"
-                exit 1
-            fi
-            ;;
-        centos)
-            if [[ "${PRETTY_NAME:-$NAME}" != *"Stream"* ]] || [[ ! "$version_major" =~ ^(9|10)$ ]]; then
-                print_status "ERROR" "仅支持 CentOS Stream 9/10，不支持当前系统: $pretty_name"
-                exit 1
-            fi
-            ;;
-        *)
-            print_status "ERROR" "此脚本仅支持 Rocky/AlmaLinux/Oracle Linux/CentOS Stream，当前系统: $pretty_name"
+    local os_ids=" $ID ${ID_LIKE:-} "
+    if [[ "$ID" =~ ^(rhel|rocky|almalinux|ol|centos)$ || "$os_ids" == *" rhel "* || "$os_ids" == *" centos "* ]]; then
+        OS_FAMILY=el
+        EL_VERSION="${PLATFORM_ID##*:el}"
+        EL_VERSION="${EL_VERSION:-${VERSION_ID%%.*}}"
+        if [[ ! "$EL_VERSION" =~ ^(9|10)$ ]]; then
+            print_status "ERROR" "仅支持 EL 9/10，当前系统: $pretty_name"
             exit 1
-            ;;
-    esac
+        fi
+        SSH_SERVICE=sshd
+        CHRONY_SERVICE=chronyd
+        CHRONY_CONF=/etc/chrony.conf
+        ADMIN_GROUP=wheel
+    elif [[ "$os_ids" == *" ubuntu "* || "$os_ids" == *" debian "* ]]; then
+        OS_FAMILY=debian
+        DISTRO_BASE=debian
+        DISTRO_CODENAME="${VERSION_CODENAME:-}"
+        if [[ "$os_ids" == *" ubuntu "* || -n "${UBUNTU_CODENAME:-}" ]]; then
+            DISTRO_BASE=ubuntu
+            DISTRO_CODENAME="${UBUNTU_CODENAME:-$DISTRO_CODENAME}"
+            if [[ ! "$DISTRO_CODENAME" =~ ^(noble|resolute)$ ]]; then
+                print_status "ERROR" "仅支持 Ubuntu 24.04/26.04 LTS 及其衍生系统: $pretty_name"
+                exit 1
+            fi
+        else
+            local debian_version
+            debian_version=$(cut -d. -f1 /etc/debian_version 2>/dev/null)
+            case "$debian_version" in
+                12) DISTRO_CODENAME=bookworm ;;
+                13) DISTRO_CODENAME=trixie ;;
+                *)
+                    print_status "ERROR" "仅支持 Debian 12/13 及其衍生系统: $pretty_name"
+                    exit 1
+                    ;;
+            esac
+        fi
+        SSH_SERVICE=ssh
+        CHRONY_SERVICE=chrony
+        CHRONY_CONF=/etc/chrony/chrony.conf
+        ADMIN_GROUP=sudo
+    else
+        print_status "ERROR" "此脚本支持 EL 9/10、Debian、Ubuntu 及兼容衍生系统；Alpine 请使用 alpine.sh: $pretty_name"
+        exit 1
+    fi
 
     print_status "INFO" "操作系统检查通过: $pretty_name"
+}
+
+install_packages() {
+    if [[ "$OS_FAMILY" == debian ]]; then
+        sudo apt-get update && sudo apt-get install -y --no-install-recommends "$@"
+    else
+        sudo dnf install -y "$@"
+    fi
+}
+
+enable_epel() {
+    [[ "$OS_FAMILY" == el ]] || return 0
+    rpm -q epel-release &>/dev/null && return 0
+    sudo dnf install -y "https://dl.fedoraproject.org/pub/epel/epel-release-latest-${EL_VERSION}.noarch.rpm"
+    check_result $? "EPEL 仓库已启用" "EPEL 仓库启用失败"
 }
 
 # 用户确认函数
@@ -205,7 +239,16 @@ configure_firewall_port() {
     local port=$2
 
     if ! command -v firewall-cmd &>/dev/null || ! sudo firewall-cmd --state &>/dev/null; then
-        print_status "ERROR" "firewalld 未安装或未运行"
+        if [[ "$OS_FAMILY" == debian ]] && command -v ufw &>/dev/null &&
+            sudo env LC_ALL=C ufw status | grep -q '^Status: active'; then
+            if [[ "$action" == add ]]; then
+                sudo ufw allow "$port/tcp"
+            else
+                sudo ufw --force delete allow "$port/tcp"
+            fi
+            return $?
+        fi
+        print_status "ERROR" "需要运行中的 firewalld（Debian/Ubuntu 也可使用 UFW）管理 SSH 防火墙规则"
         return 1
     fi
 
@@ -311,8 +354,9 @@ pre_check() {
     print_status "INFO" "内存: ${mem_available_mb:-未知}MB 可用 / ${mem_total_mb:-未知}MB 总计"
     print_status "INFO" "Swap: ${swap_total_mb:-未知}MB"
 
-    local service
-    for service in sshd chronyd docker dnf-automatic-install.timer systemd-journald; do
+    local service update_timer=dnf-automatic-install.timer
+    [[ "$OS_FAMILY" == debian ]] && update_timer=apt-daily-upgrade.timer
+    for service in "$SSH_SERVICE" "$CHRONY_SERVICE" docker "$update_timer" systemd-journald init-aide-check.timer; do
         if systemctl list-unit-files "$service" --no-legend 2>/dev/null | grep -q . || systemctl status "$service" &>/dev/null; then
             if systemctl is-active --quiet "$service"; then
                 print_status "SUCCESS" "$service: active"
@@ -341,10 +385,13 @@ pre_check() {
         print_status "INFO" "journald: 未确认持久化写入"
     fi
 
-    if [[ -f /var/lib/aide/aide.db.gz ]]; then
+    if sudo test -f /var/lib/aide/aide.db.gz || sudo test -f /var/lib/aide/aide.db; then
         print_status "SUCCESS" "AIDE: 数据库已存在"
     else
         print_status "INFO" "AIDE: 未检测到数据库"
+    fi
+    if systemctl is-failed --quiet init-aide-check.service 2>/dev/null; then
+        print_status "WARNING" "AIDE 检查异常，请查看 journalctl -u init-aide-check.service"
     fi
 }
 
@@ -397,6 +444,10 @@ change_hostname() {
 
 # 3. 关闭 SELinux
 disable_selinux() {
+    if [[ "$OS_FAMILY" != el ]]; then
+        print_status "SKIP" "此项仅适用于 EL 的 SELinux"
+        return 77
+    fi
     local current_status
     current_status=$(getenforce 2>/dev/null || echo "Unknown")
     print_status "INFO" "当前 SELinux 状态: $current_status"
@@ -434,6 +485,11 @@ disable_selinux() {
 # 5. 配置 SSH
 configure_ssh() {
     print_status "PROGRESS" "配置 SSH 端口"
+
+    if systemctl is-active --quiet ssh.socket; then
+        print_status "ERROR" "当前由 ssh.socket 监听；请先切换到 ssh.service 再使用端口迁移"
+        return 1
+    fi
 
     local ssh_config="/etc/ssh/sshd_config"
     if ! sudo test -r "$ssh_config"; then
@@ -534,7 +590,7 @@ configure_ssh() {
 
     local ssh_ready=false
     local attempt
-    if sudo systemctl reload sshd &>/dev/null; then
+    if sudo systemctl reload "$SSH_SERVICE" &>/dev/null; then
         for (( attempt = 0; attempt < 10; attempt++ )); do
             sleep 0.5
             if check_port "$ssh_port"; then
@@ -545,7 +601,7 @@ configure_ssh() {
     fi
     if [[ "$ssh_ready" == false ]]; then
         sudo cp -a "$ssh_config_backup" "$ssh_config" &>/dev/null || true
-        sudo systemctl reload sshd &>/dev/null || true
+        sudo systemctl reload "$SSH_SERVICE" &>/dev/null || true
         print_status "ERROR" "SSH 未能在新端口监听，配置已回滚"
         return 1
     fi
@@ -573,12 +629,15 @@ install_basic_packages() {
     print_status "PROGRESS" "安装基础软件包"
 
     local archive_package="7zip"
-    [[ "${VERSION_ID%%.*}" == "8" ]] && archive_package="p7zip"
     local packages=("$archive_package" "wget" "git" "vim" "atop" "sysstat" "tmux")
     
-    sudo dnf update -y
-    sudo dnf install -y epel-release
-    sudo dnf install -y "${packages[@]}"
+    if [[ "$OS_FAMILY" == debian ]]; then
+        sudo apt-get update && sudo apt-get upgrade -y || return 1
+    else
+        sudo dnf update -y || return 1
+    fi
+    enable_epel || return 1
+    install_packages "${packages[@]}"
     check_result $? "基础软件包安装完成" "基础软件包安装失败"
 }
 
@@ -608,12 +667,11 @@ install_zsh_tools() {
     fi
 
     print_status "PROGRESS" "安装 ZSH、Git 和 FZF"
-    sudo dnf install -y epel-release &>/dev/null
-    check_result $? "EPEL 仓库已启用" "EPEL 仓库启用失败" || return 1
-    sudo dnf install -y zsh git fzf
+    enable_epel || return 1
+    install_packages zsh git fzf
     check_result $? "ZSH 相关软件包安装完成" "ZSH 相关软件包安装失败" || return 1
     if ! command -v curl &>/dev/null; then
-        sudo dnf install -y curl
+        install_packages curl
         check_result $? "curl 安装完成" "curl 安装失败" || return 1
     fi
 
@@ -748,10 +806,10 @@ EOF
 sync_system_time() {
     print_status "PROGRESS" "配置 NTS 时间同步"
     
-    sudo dnf install -y chrony &>/dev/null
+    install_packages chrony
     check_result $? "Chrony 安装完成" "Chrony 安装失败" || return 1
 
-    local chrony_conf="/etc/chrony.conf"
+    local chrony_conf="$CHRONY_CONF"
     sudo sed -Ei '/^[[:space:]]*(server|pool|peer|authselectmode)[[:space:]]/d' "$chrony_conf" &&
         sudo tee -a "$chrony_conf" >/dev/null <<'EOF'
 authselectmode require
@@ -760,7 +818,7 @@ server nts.netnod.se iburst nts
 EOF
     check_result $? "NTS 时间源已配置" "NTS 时间源配置失败" || return 1
 
-    sudo systemctl enable chronyd &>/dev/null && sudo systemctl restart chronyd &>/dev/null
+    sudo systemctl enable "$CHRONY_SERVICE" &>/dev/null && sudo systemctl restart "$CHRONY_SERVICE" &>/dev/null
     check_result $? "NTS 时间同步服务已启用" "NTS 时间同步配置失败" || return 1
 
     sudo chronyc -N authdata 2>/dev/null
@@ -795,52 +853,94 @@ EOF
     fi
 }
 
-# 10. 创建 Swap
+# 10. 配置 Swap
 configure_swap() {
     print_status "PROGRESS" "配置 Swap"
+    swapon --show 2>/dev/null || cat /proc/swaps
 
-    if awk 'NR > 1 {found=1} END {exit found ? 0 : 1}' /proc/swaps 2>/dev/null; then
-        print_status "SUCCESS" "检测到已有 Swap，跳过创建"
-        swapon --show 2>/dev/null || cat /proc/swaps
-        return 0
-    fi
+    local swap_type swap_size_mb default_size_mb=4096
+    while true; do
+        read -rp "[?] 类型：1) 磁盘文件 2) zram 0) 跳过（默认 1）: " swap_type || return 77
+        swap_type=${swap_type:-1}
+        case "$swap_type" in
+            1) break ;;
+            2)
+                default_size_mb=$(awk '/MemTotal/ {n=int($2/2048); print n<4096 ? n : 4096}' /proc/meminfo)
+                break ;;
+            0) return 77 ;;
+            *) print_status "WARNING" "请输入 0、1 或 2" ;;
+        esac
+    done
+    while true; do
+        read -rp "[?] 大小（MiB，1024 MiB = 1 GiB，默认 $default_size_mb）: " swap_size_mb || return 77
+        swap_size_mb=${swap_size_mb:-$default_size_mb}
+        [[ "$swap_size_mb" =~ ^[1-9][0-9]*$ ]] && break
+        print_status "WARNING" "请输入正整数 MiB，例如 512、2048 或 4096"
+    done
 
     if ! command -v mkswap &>/dev/null || ! command -v swapon &>/dev/null; then
-        sudo dnf install -y util-linux
+        install_packages util-linux
         check_result $? "Swap 工具安装完成" "Swap 工具安装失败" || return 1
     fi
 
-    local swap_size_gb
-    while true; do
-        read -rp "$(echo -e "${WHITE}[?]${NC} Swap 大小（单位 G，默认 4）: ")" swap_size_gb
-        swap_size_gb=${swap_size_gb:-4}
-        if [[ "$swap_size_gb" =~ ^[1-9][0-9]*$ ]]; then
-            break
+    if [[ "$swap_type" == 2 ]]; then
+        local zram_package=zram-generator
+        [[ "$OS_FAMILY" == debian ]] && zram_package=systemd-zram-generator
+        install_packages "$zram_package" kmod || return 1
+        if [[ -n "$(sudo zramctl --noheadings)" ]]; then
+            print_status "SKIP" "已有 zram 设备，保留当前配置；调整大小前请先停用对应设备"
+            return 77
         fi
-        print_status "WARNING" "请输入正整数，例如 2 或 4"
-    done
+        if ! sudo modprobe zram; then
+            print_status "ERROR" "当前内核无法加载 zram，现有 Swap 保持不变"
+            return 1
+        fi
+        sudo mkdir -p /etc/systemd/zram-generator.conf.d || return 1
+        sudo tee /etc/systemd/zram-generator.conf.d/80-init.conf >/dev/null <<EOF
+[zram0]
+zram-size = $swap_size_mb
+swap-priority = 100
+EOF
+        check_result $? "zram 配置已写入" "zram 配置写入失败" || return 1
+        sudo systemctl daemon-reload && sudo systemctl start dev-zram0.swap
+        check_result $? "" "zram 启动失败" || return 1
+        if ! awk '$1=="/dev/zram0" {found=1} END {exit !found}' /proc/swaps; then
+            print_status "ERROR" "未检测到已启用的 zram Swap"
+            return 1
+        fi
+        print_status "SUCCESS" "zram 已启用并配置开机启动: ${swap_size_mb} MiB，优先级 100"
+        return 0
+    fi
 
     local swap_file="/swapfile"
+    if sudo test -L "$swap_file" || { sudo test -e "$swap_file" && ! sudo test -f "$swap_file"; }; then
+        print_status "ERROR" "$swap_file 不是普通文件，拒绝覆盖"
+        return 1
+    fi
     if sudo test -e "$swap_file"; then
         print_status "WARNING" "$swap_file 已存在"
-        if ! prompt_user "是否删除后重新创建"; then
+        if ! prompt_user "是否删除后按新大小创建" "N"; then
             print_status "SKIP" "已跳过 Swap 创建"
             return 77
         fi
-        sudo swapoff "$swap_file" 2>/dev/null || true
+        if awk -v file="$swap_file" '$1==file {found=1} END {exit !found}' /proc/swaps &&
+            ! sudo swapoff "$swap_file"; then
+            print_status "ERROR" "无法停用现有 Swap，保留原文件"
+            return 1
+        fi
         if ! sudo rm -f "$swap_file"; then
             print_status "ERROR" "删除旧 swapfile 失败: $swap_file"
             return 1
         fi
     fi
 
-    print_status "PROGRESS" "创建 ${swap_size_gb}G swapfile"
+    print_status "PROGRESS" "创建 ${swap_size_mb} MiB swapfile"
     if ! {
         if command -v fallocate &>/dev/null; then
-            sudo fallocate -l "${swap_size_gb}G" "$swap_file" 2>/dev/null || \
-                sudo dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+            sudo fallocate -l "${swap_size_mb}M" "$swap_file" 2>/dev/null || \
+                sudo dd if=/dev/zero of="$swap_file" bs=1M count="$swap_size_mb"
         else
-            sudo dd if=/dev/zero of="$swap_file" bs=1M count=$((swap_size_gb * 1024))
+            sudo dd if=/dev/zero of="$swap_file" bs=1M count="$swap_size_mb"
         fi
     }; then
         print_status "ERROR" "swapfile 创建失败"
@@ -867,7 +967,7 @@ configure_swap() {
     fi
 
     local fstab_entry="/swapfile none swap sw 0 0"
-    if ! sudo grep -Eq '^[[:space:]]*/swapfile[[:space:]]+none[[:space:]]+swap[[:space:]]+sw[[:space:]]+0[[:space:]]+0' /etc/fstab; then
+    if ! sudo awk -v file="$swap_file" '$1==file && $3=="swap" {found=1} END {exit !found}' /etc/fstab; then
         if ! echo "$fstab_entry" | sudo tee -a /etc/fstab >/dev/null; then
             print_status "ERROR" "Swap 持久化配置写入失败"
             if sudo swapoff "$swap_file" 2>/dev/null; then
@@ -877,12 +977,23 @@ configure_swap() {
         fi
     fi
 
-    print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_gb}G"
+    print_status "SUCCESS" "Swap 已创建并启用: ${swap_size_mb} MiB"
     swapon --show 2>/dev/null || cat /proc/swaps
 }
 
 # 11. 设置自动更新
 setup_auto_updates() {
+    if [[ "$OS_FAMILY" == debian ]]; then
+        install_packages unattended-upgrades || return 1
+        sudo tee /etc/apt/apt.conf.d/20auto-upgrades >/dev/null <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+        check_result $? "自动更新配置已写入" "自动更新配置失败" || return 1
+        sudo systemctl enable --now apt-daily.timer apt-daily-upgrade.timer
+        check_result $? "已启用 unattended-upgrades，更新范围沿用发行版默认配置" "自动更新启用失败"
+        return $?
+    fi
     local upgrade_type="security"
     local update_scope="安全更新"
     if [[ "$ID" == "centos" ]]; then
@@ -907,38 +1018,89 @@ setup_auto_updates() {
 configure_aide() {
     print_status "PROGRESS" "安装文件完整性检测工具"
     
-    sudo dnf install -y aide
-    check_result $? "AIDE 安装完成" "AIDE 安装失败" || return 1
-    
-    print_status "PROGRESS" "初始化 AIDE 数据库（可能需要几分钟）"
-    if ! sudo aide --init; then
-        print_status "ERROR" "AIDE 数据库初始化失败"
-        return 1
+    if [[ "$OS_FAMILY" == debian ]]; then
+        install_packages aide aide-common
+    else
+        install_packages aide
     fi
+    check_result $? "AIDE 安装完成" "AIDE 安装失败" || return 1
 
+    local aide_conf=/etc/aide.conf
     local aide_new_db="/var/lib/aide/aide.db.new.gz"
     local aide_db="/var/lib/aide/aide.db.gz"
-    if ! sudo test -f "$aide_new_db"; then
-        print_status "ERROR" "未找到 AIDE 初始化生成的数据库: $aide_new_db"
+    if [[ "$OS_FAMILY" == debian ]]; then
+        aide_conf=/etc/aide/aide.conf
+        aide_new_db=/var/lib/aide/aide.db.new
+        aide_db=/var/lib/aide/aide.db
+    fi
+    local aide_bin
+    aide_bin=$(sudo sh -c 'command -v aide') || return 1
+
+    if ! sudo tee /etc/systemd/system/init-aide-check.service >/dev/null <<EOF
+[Unit]
+Description=AIDE file integrity check
+
+[Service]
+Type=oneshot
+ExecStart=$aide_bin --config=$aide_conf --check
+Nice=19
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal
+EOF
+    then
+        print_status "ERROR" "AIDE 服务配置写入失败"
         return 1
+    fi
+    if ! sudo tee /etc/systemd/system/init-aide-check.timer >/dev/null <<'EOF'
+[Unit]
+Description=Daily AIDE file integrity check
+
+[Timer]
+OnCalendar=*-*-* 04:00:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    then
+        print_status "ERROR" "AIDE 定时器配置写入失败"
+        return 1
+    fi
+    sudo systemctl daemon-reload || return 1
+    # 先创建开机链接，避免首次基线漏掉定时器自身的配置。
+    sudo systemctl enable init-aide-check.timer || return 1
+
+    if sudo test -e "$aide_db"; then
+        print_status "INFO" "保留已有 AIDE 基线: $aide_db"
+    else
+        print_status "PROGRESS" "首次初始化 AIDE 基线（可能需要几分钟）"
+        if ! sudo "$aide_bin" --config="$aide_conf" --init; then
+            print_status "ERROR" "AIDE 数据库初始化失败"
+            return 1
+        fi
+        if ! sudo test -s "$aide_new_db" || ! sudo mv -n "$aide_new_db" "$aide_db"; then
+            print_status "ERROR" "AIDE 基线启用失败: $aide_db"
+            return 1
+        fi
     fi
 
-    if ! sudo mv "$aide_new_db" "$aide_db"; then
-        print_status "ERROR" "AIDE 数据库启用失败: $aide_db"
-        return 1
+    sudo systemctl start init-aide-check.timer
+    check_result $? "AIDE 每日 04:00–04:30 检查已启用（本机时区），错过的检查会补跑" "AIDE 定时器启用失败" || return 1
+    if [[ "$OS_FAMILY" == debian ]] && systemctl cat dailyaidecheck.timer &>/dev/null; then
+        sudo systemctl disable --now dailyaidecheck.timer || return 1
     fi
-    
-    print_status "SUCCESS" "AIDE 配置完成"
+    print_status "INFO" "异常会使 init-aide-check.service 进入 failed；查看报告: journalctl -u init-aide-check.service"
+    print_status "INFO" "基线仅在首次创建；确认文件变更后再手动更新，不会自动接受变更"
 }
 
 # 13. Lynis 安全审计
 run_lynis_audit() {
     print_status "PROGRESS" "执行 Lynis 安全审计"
 
-    sudo dnf install -y epel-release
-    check_result $? "EPEL 仓库已启用" "EPEL 仓库启用失败" || return 1
-
-    sudo dnf install -y lynis
+    enable_epel || return 1
+    install_packages lynis
     check_result $? "Lynis 安装完成" "Lynis 安装失败" || return 1
 
     print_status "PROGRESS" "运行 Lynis 安全扫描"
@@ -950,13 +1112,23 @@ run_lynis_audit() {
 install_docker() {
     print_status "PROGRESS" "安装 Docker CE"
 
-    sudo dnf install -y dnf-plugins-core &>/dev/null
-    check_result $? "Docker 仓库工具安装完成" "Docker 仓库工具安装失败" || return 1
+    if [[ "$OS_FAMILY" == debian ]]; then
+        install_packages ca-certificates curl || return 1
+        sudo install -m 0755 -d /etc/apt/keyrings || return 1
+        sudo curl -fsSL "https://download.docker.com/linux/$DISTRO_BASE/gpg" -o /etc/apt/keyrings/docker.asc || return 1
+        sudo chmod 644 /etc/apt/keyrings/docker.asc || return 1
+        printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/%s %s stable\n' \
+            "$(dpkg --print-architecture)" "$DISTRO_BASE" "$DISTRO_CODENAME" |
+            sudo tee /etc/apt/sources.list.d/docker.list >/dev/null || return 1
+    else
+        install_packages dnf-plugins-core || return 1
+        local docker_distro=centos
+        [[ "$ID" == rhel ]] && docker_distro=rhel
+        sudo dnf config-manager --add-repo "https://download.docker.com/linux/$docker_distro/docker-ce.repo"
+        check_result $? "Docker 仓库已配置" "Docker 仓库配置失败" || return 1
+    fi
 
-    sudo dnf config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo &>/dev/null
-    check_result $? "Docker 仓库已配置" "Docker 仓库配置失败" || return 1
-
-    sudo dnf install -y docker-ce docker-ce-cli containerd.io
+    install_packages docker-ce docker-ce-cli containerd.io
     check_result $? "Docker 安装完成" "Docker 安装失败" || return 1
 
     sudo systemctl enable --now docker &>/dev/null
@@ -1081,10 +1253,9 @@ create_custom_user() {
         print_status "SKIP" "未为 $new_user 设置密码（建议使用 SSH 公钥登录）"
     fi
 
-    # 选择是否加入 wheel（sudo）组
-    if prompt_user "是否将 $new_user 添加到 wheel (sudo) 组?"; then
-        sudo usermod -aG wheel "$new_user"
-        check_result $? "已将 $new_user 添加到 wheel 组" "加入 wheel 组失败" || return 1
+    if prompt_user "是否将 $new_user 添加到 $ADMIN_GROUP (sudo) 组?"; then
+        sudo usermod -aG "$ADMIN_GROUP" "$new_user"
+        check_result $? "已将 $new_user 添加到 $ADMIN_GROUP 组" "加入管理员组失败" || return 1
     fi
 
     # 选择是否创建无密码 sudoers
@@ -1229,7 +1400,7 @@ EOF
 # 显示菜单
 show_menu() {
     clear
-    echo -e "${WHITE}=== ${PRETTY_NAME:-Enterprise Linux} 初始化脚本 ===${NC}"
+    echo -e "${WHITE}=== ${PRETTY_NAME:-Linux} 初始化脚本 ===${NC}"
     
     local menu_items=(
         "设置代理"
@@ -1241,9 +1412,9 @@ show_menu() {
         "安装 ZSH 工具链"
         "同步系统时间"
         "启用 TCP BBR"
-        "创建 Swap"
+        "配置 Swap（文件 / zram）"
         "设置自动更新"
-        "配置 AIDE"
+        "配置 AIDE 定期检查"
         "Lynis 安全审计"
         "安装 Docker"
         "配置 SSH 公钥"
@@ -1313,7 +1484,7 @@ main() {
             7) run_menu_item "7" "安装 ZSH 工具链" install_zsh_tools ;;
             8) run_menu_item "8" "同步系统时间" sync_system_time ;;
             9) run_menu_item "9" "启用 TCP BBR" enable_bbr ;;
-            10) run_menu_item "10" "创建 Swap" configure_swap ;;
+            10) run_menu_item "10" "配置 Swap" configure_swap ;;
             11) run_menu_item "11" "设置自动更新" setup_auto_updates ;;
             12) run_menu_item "12" "配置 AIDE" configure_aide ;;
             13) run_menu_item "13" "Lynis 安全审计" run_lynis_audit ;;
