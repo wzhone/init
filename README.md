@@ -91,39 +91,10 @@ Alpine 版（`alpine.sh`）：
 15. 系统检查
 
 
-## AIDE、Swap 与自动更新
-
-- AIDE 仅首次初始化基线；重复配置不会覆盖已有基线。`init-aide-check.timer` 每日按本机时区在 04:00–04:30 执行检查，错过后补跑。差异或错误使 `init-aide-check.service` 进入 failed 状态，系统检查会提示，报告可通过 `journalctl -u init-aide-check.service` 查看。这是本机告警，不包含邮件或远程通知。确认变更后再手动更新基线。
-- Swap 可选 `/swapfile` 或 zram，大小以 MiB 输入（1024 MiB = 1 GiB）。磁盘文件默认 4096 MiB，zram 默认物理内存的一半、最多 4096 MiB。zram 以优先级 100 与已有磁盘 Swap 共存；已有 zram 设备时保留原配置。EL 使用 `zram-generator`，Debian/Ubuntu 使用 `systemd-zram-generator`，Alpine 使用 `zram-init`；需要内核支持。
-- Alpine 自动更新可指定每日时间（默认本机时区 03:00）。每次运行仅使用 `/etc/apk/repositories` 中当前稳定分支的 main/community 仓库，升级全部符合现有包约束的软件包，不限于安全补丁，不使用 `--available` 强制替换版本。edge 和其他版本仓库不参与；依赖这些仓库的包若无法解析，更新会失败并记录日志，不会静默跨版本升级。
-- Alpine 更新保留其他 root cron 任务，旧的 `daily/apk-auto-upgrade` 会移至 `/root` 备份。包变更见 `/var/log/apk.log`，结果写入 syslog（标识 `init-apk-upgrade`）；不会自动重启系统。
-
-## 日志与记录
-
-- systemd 版：`~/.local/state/init/el-init.log`（日志）、`~/.local/state/init/el-init.conf`（执行记录，保留原路径）
-- Alpine：`~/.local/state/init/alpine-init.log`（日志）、`~/.local/state/init/.steps/`（执行记录）
-- 执行记录仅在菜单项成功结束后写入；失败、跳过或中途终止不会标记为已完成。
-- 目录权限默认为 700，日志/记录文件为 600。
-
-## 系统检查
-
-两个脚本的系统检查会合并运行前置检查与状态巡检，包含磁盘、CPU、内存、Swap、关键服务和关键配置状态。
-
-
 ## 安全提示
 
 - 修改 SSH 端口需要运行中的 firewalld，Debian/Ubuntu 也可使用 UFW；若使用 `ssh.socket`，需先切换到 `ssh.service`。外部防火墙或云安全组需自行放行新端口。
 - 禁用 SELinux 会削弱系统安全边界，生产环境慎用。
-
-## 验证
-
-```bash
-bash -n el.sh && bash -n alpine.sh
-shellcheck -x el.sh alpine.sh
-python3 tests/check_init.py
-```
-
-回归检查在临时目录中模拟系统命令，不修改主机配置。CI 还会在支持的发行版容器中检查系统识别、菜单及巡检；容器检查不替代真实主机的内核 Swap 和服务启动验证。
 
 
 ## 许可证

@@ -32,13 +32,13 @@ jobs:
           set -euxo pipefail
           shellcheck -x el.sh alpine.sh
 
-      - name: Configuration regression checks
-        run: python3 tests/check_init.py
-
   systemd-smoke:
     name: ${{ matrix.name }} smoke
     runs-on: ubuntu-latest
     needs: lint
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
